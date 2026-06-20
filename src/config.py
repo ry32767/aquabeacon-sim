@@ -98,6 +98,32 @@ EST_LOSS = str(_get("estimator", "loss", "linear"))
 EST_F_SCALE = float(_get("estimator", "f_scale", 1.345))
 
 # =====================================================================
+# 親機の光学リンク: 水中の減衰・拡散モデル (MATH_SPEC §9)
+# OPTICAL_MODEL は sensors の optical_* / simulate_observation_realistic に渡せる辞書
+# (角度は rad、距離は m、c は 1/m)。既定は enable=False で従来挙動と一致。
+# =====================================================================
+OPTICAL_ENABLE = bool(_get("optical", "enable", False))
+OPTICAL_MODEL = {
+    "attenuation_c": float(_get("optical", "attenuation_c", 0.30)),
+    "range_ref": float(_get("optical", "range_ref", 10.0)),
+    "sigma_ref": np.deg2rad(float(_get("optical", "sigma_ref_deg", 0.3))),
+    "sigma_floor": np.deg2rad(float(_get("optical", "sigma_floor_deg", 0.08))),
+    "snr_ref": float(_get("optical", "snr_ref", 40.0)),
+    "snr_exponent": float(_get("optical", "snr_exponent", 1.0)),
+    "snr_min": float(_get("optical", "snr_min", 6.0)),
+    "dropout_max": float(_get("optical", "dropout_max", 0.5)),
+    "dropout_jump": np.deg2rad(float(_get("optical", "dropout_jump_deg", 30.0))),
+}
+
+# 深い水深のテストシナリオ (run_deepwater.py)
+DEEP_DEPTHS = list(_get("deepwater", "depths", [5, 10, 15, 20]))
+DEEP_HORIZ_OFFSET = np.asarray(_get("deepwater", "horiz_offset", [3.0, 2.0]), dtype=float)
+DEEP_CLARITIES = list(_get("deepwater", "clarities", [0.05, 0.3, 1.0]))
+DEEP_TRAJ_DEPTH = float(_get("deepwater", "traj_depth", 13.0))
+DEEP_TRAJ_CLARITY = float(_get("deepwater", "traj_clarity", 0.5))
+DEEP_MC_N = int(_get("deepwater", "mc_n", 600))
+
+# =====================================================================
 # 再現性
 # =====================================================================
 SEED = int(_get("montecarlo", "seed", 0))

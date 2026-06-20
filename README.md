@@ -47,6 +47,7 @@ python scripts/run_mapping.py       # サクセス: 複数時刻+IMUの軌道推
 python scripts/run_sensitivity.py   # 感度解析(ノイズ・距離・角度を振る)
 python scripts/run_spec.py          # 設計スペックシート: 目標精度→設計要求を逆算
 python scripts/run_robust.py        # ロバスト推定デモ: 外れ値下で L2 vs Huber/Cauchy
+python scripts/run_deepwater.py     # 深い水深(10-20m)テスト: 光減衰→精度劣化・見失い
 python scripts/run_visualize.py     # 発表用の図・アニメ生成 (figures/ にシナリオ別フォルダで出力)
 ```
 
@@ -70,6 +71,18 @@ python scripts/run_visualize.py     # 発表用の図・アニメ生成 (figures
 冗長性のある **IMU拘束つき軌道推定で効く** (単時刻は観測3・未知数3で冗長性ゼロのため効かない)。
 `run_robust.py` のデモでは、外れ値下で **RMSE 411 → 30 mm (93%改善)**。
 `config.toml [estimator] loss` で全スクリプト既定を切替可能。
+
+### 親機光学リンク: 水中の減衰・拡散 (`config.toml [optical]`) と深水深テスト
+
+光は水中で吸収・散乱して減衰する (MATH_SPEC §9)。遠い/濁るほど受光 SNR が落ち、
+角度ノイズ σ_ang が増え、ついには**ビーコン見失い (ドロップアウト=外れ値)** が起きる。
+モデルは透過率 `T=exp(-c·d)`・信号比 `R=(d_ref/d)²·exp(-c(d-d_ref))`・`σ_ang=σ_floor+(σ_ref-σ_floor)/R^p`。
+`c` (ビーム減衰係数 [1/m]) が水の濁り (clear 0.05 / coastal 0.3 / turbid 1.0)。
+既定 `[optical] enable=false` で従来と一致。`sensors.simulate_observation_realistic(optical_model=...)`。
+
+`run_deepwater.py` は水深 5〜20m × 濁り clear/coastal/turbid で測位精度・見失いを掃引し、
+深い濁った水での軌道を **linear vs robust** で比較する (見失いが多い領域でロバストが軌道を救う)。
+深さ・濁りは `config.toml [deepwater]` で編集。出力は `figures/deepwater/` + `results/run_deepwater.{json,csv}`。
 
 ### 現実的センサ誤差モデル (`config.toml [error_model]`)
 

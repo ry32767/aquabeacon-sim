@@ -540,3 +540,58 @@ d_meas = τ · c_assumed = d_true · (c_assumed / c_true)
 4. **距離依存σ**: `effective_sigma(d, σ, k_a)` が `d` に対し線形増加。
 5. **外れ値率**: `outlier_rate = 0.3`、多数試行で大誤差成分の割合 ≈ 0.3 (±許容)。
 6. **時刻同期 (ノイズ0)**: `v, Δt ≠ 0` で距離が `‖p − vΔt‖` に一致 (rtol=1e-9)。
+
+---
+
+## 9. 親機光学リンク: 水中の減衰・拡散モデル
+
+親機カメラによる角度追跡の現実性を上げる。光は水中で**吸収**と**散乱**を受けて減衰し、
+遠い/濁るほど受光信号 (SNR) が落ちて角度精度が悪化し、ついには**ビーコンを見失う**
+(ドロップアウト=外れ値)。§8.2 の線形 `range_growth` を**物理ベースに置き換える**追加項。
+実装は `sensors.optical_*` と `simulate_observation_realistic(optical_model=...)`、設定は
+`config.toml [optical]`。既定 `enable=false` では従来と一致。
+
+記号: 距離 (光路長) `d` [m]、ビーム減衰係数 `c = a + b` [1/m] (吸収+散乱)、基準距離 `d_ref`。
+
+### 9.1 減衰と受光信号
+
+```
+透過率   T(d) = exp(-c · d)                              (Beer–Lambert)
+信号比   R(d) = (d_ref / d)^2 · exp(-c · (d - d_ref))    (幾何拡散 1/d^2 × 差分透過)
+```
+
+`R(d_ref) = 1`。`c` の目安: 清澄な外洋 ~0.05、沿岸 ~0.2–0.4、濁り ~0.5–2 [1/m]。
+
+### 9.2 SNR と角度ノイズ
+
+受光信号比から SNR を作り、重心推定の角度精度を SNR の逆数で悪化させる:
+
+```
+SNR(d)   = snr_ref · R(d)^p
+σ_ang(d) = σ_floor + (σ_ref - σ_floor) / R(d)^p
+```
+
+- `p = snr_exponent`: 信号→SNR の依存 (1 = 後方散乱/背景律速、0.5 = ショットノイズ律速)。
+- `σ_floor`: ベストケース角度ノイズ (画素量子化・校正限界)。`σ_ref`: `d_ref` での角度ノイズ。
+- `d = d_ref` で `σ_ang = σ_ref`。近いほど `σ_floor` に漸近、遠い/濁るほど発散的に増大。
+- この `σ_ang(d)` が観測の方位・仰角ノイズ σ_az, σ_el を置き換える (§7 の零平均ガウスの幅)。
+
+### 9.3 ドロップアウト (ビーコン見失い)
+
+SNR が検出しきい値 `snr_min` を下回ると、誤検出・追跡ロストで角度が大きく飛ぶ。確率:
+
+```
+p_drop(d) = dropout_max / (1 + exp( (4/snr_min) · (SNR(d) - snr_min) ))
+```
+
+`SNR >> snr_min` でほぼ 0、`SNR = snr_min` で `dropout_max/2`、`SNR → 0` で `dropout_max`。
+ドロップ時は方位・仰角に一様乱数 `U(-Δ, Δ)` (`Δ = dropout_jump`) を加える = **外れ値**。
+これは §4.4 のロバスト推定 (IMU拘束つき軌道) で抑えられる。深い水深・濁りで多発する。
+
+### (C) 数値テストケース (`tests/test_optical.py`)
+
+1. **基準点**: `R(d_ref) = 1`、`SNR(d_ref) = snr_ref`、`σ_ang(d_ref) = σ_ref` (rtol=1e-9)。
+2. **単調性**: `d` 増 または `c` 増で `SNR` 減・`σ_ang` 増。`σ_ang ≥ σ_floor`。
+3. **ドロップアウト**: `p_drop ∈ [0, dropout_max]`、深い/濁るほど増加、`SNR=snr_min` で `dropout_max/2`。
+4. **後方互換**: `optical_model=None` で `simulate_observation_realistic` が §8 既定と不変。
+5. **角度劣化**: 浅い (近) より深い (遠) で方位・仰角ノイズの実測ばらつきが増大 (統計)。

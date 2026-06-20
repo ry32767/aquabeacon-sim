@@ -113,6 +113,54 @@ def effective_sigma(d, sigma, range_growth_per_m=0.0, dist_growth_per_m=0.0):
     return np.array([sd * fd, saz * fa, sel * fa])
 
 
+# ----------------------------------------------------------------------------
+# 親機の光学リンク: 水中の減衰・拡散モデル (MATH_SPEC §9)
+#
+# 光は水中で減衰 (吸収 a + 散乱 b、c = a+b) し、距離とともに受光信号が落ちる:
+#   透過率 T(d)   = exp(-c·d)
+#   信号比 R(d)   = (d_ref/d)^2 · exp(-c·(d - d_ref))   (幾何拡散 1/d^2 × 差分透過)
+#   SNR(d)        = snr_ref · R(d)^p                    (p=1 後方散乱律速 / 0.5 ショット律速)
+#   角度ノイズ σ_ang(d) = σ_floor + (σ_ref - σ_floor) / R(d)^p
+#       (SNR が下がるほど重心推定が甘くなり角度精度が悪化。d_ref で σ_ref に一致)
+#   ドロップアウト確率 p_drop(d): SNR < snr_min で見失い (誤検出=角度の外れ値)
+#
+# model は config.OPTICAL_MODEL と同じキーの辞書 (角度は rad, 距離は m, c は 1/m)。
+# ----------------------------------------------------------------------------
+def optical_signal_ratio(d, attenuation_c, range_ref):
+    """受光信号比 R(d) = (d_ref/d)^2 · exp(-c·(d-d_ref))。d=range_ref で 1。"""
+    d = max(float(d), 1e-9)
+    return (range_ref / d) ** 2 * np.exp(-attenuation_c * (d - range_ref))
+
+
+def optical_snr(d, model):
+    """距離 d における光学 SNR (MATH_SPEC §9)。"""
+    R = optical_signal_ratio(d, model["attenuation_c"], model["range_ref"])
+    return model["snr_ref"] * R ** model["snr_exponent"]
+
+
+def optical_angular_sigma(d, model):
+    """距離 d における有効角度ノイズ σ_ang(d) [rad] (MATH_SPEC §9)。
+
+    σ_floor + (σ_ref - σ_floor)/R^p。d=range_ref で σ_ref、近いほど σ_floor に漸近、
+    遠い/濁るほど増大する。
+    """
+    R = optical_signal_ratio(d, model["attenuation_c"], model["range_ref"])
+    return model["sigma_floor"] + (model["sigma_ref"] - model["sigma_floor"]) \
+        / R ** model["snr_exponent"]
+
+
+def optical_dropout_prob(d, model):
+    """距離 d でビーコンを見失う確率 (MATH_SPEC §9)。
+
+    SNR が snr_min を下回るほど 0→dropout_max へ立ち上がるロジスティック。
+    SNR>>snr_min でほぼ 0、SNR=snr_min で dropout_max/2。
+    """
+    snr = optical_snr(d, model)
+    k = 4.0 / max(model["snr_min"], 1e-6)        # 立ち上がりの鋭さ
+    x = np.clip(k * (snr - model["snr_min"]), -500.0, 500.0)   # exp のオーバーフロー回避
+    return float(model["dropout_max"] / (1.0 + np.exp(x)))
+
+
 def simulate_observation_realistic(p_child, sigma, seed, p_parent=None,
                                    observe_from_parent=True, *,
                                    bias=(0.0, 0.0, 0.0),
@@ -123,7 +171,8 @@ def simulate_observation_realistic(p_child, sigma, seed, p_parent=None,
                                    sound_speed_true=1500.0,
                                    sound_speed_assumed=1500.0,
                                    acoustic_latency_s=0.0,
-                                   velocity=None):
+                                   velocity=None,
+                                   optical_model=None):
     """現実的な誤差を含むノイズ付き観測 (d, theta, phi) を生成する (MATH_SPEC §8)。
 
     既定値はすべて『理想』で、simulate_observation(同 seed) と一致する。
@@ -133,6 +182,9 @@ def simulate_observation_realistic(p_child, sigma, seed, p_parent=None,
     p_child            : 真の子機位置 [m] (光学観測の時刻 t における位置)
     velocity           : 子機速度 [m/s] (3,)。時刻同期 (§8.5) で使用。None で 0。
     acoustic_latency_s : 音響が光学より遅れる時間 [s]。音響距離は t-latency の位置で測る。
+    optical_model      : 光学リンク減衰モデル (MATH_SPEC §9) の辞書。None で無効。
+                         与えると角度ノイズ σ_az/σ_el を距離・濁り依存に置換し、確率的に
+                         ビーコン見失い (角度の外れ値) を起こす。config.OPTICAL_MODEL を渡せる。
     その他のキーワードは §8 各項を参照。
     """
     if p_parent is None:
@@ -158,6 +210,13 @@ def simulate_observation_realistic(p_child, sigma, seed, p_parent=None,
 
     # --- 距離依存ノイズ (§8.2) を有効σとして加える (§7 の零平均ガウス) ---
     eff = effective_sigma(d_optical, sigma, range_growth_per_m, dist_growth_per_m)
+
+    # --- 光学リンク減衰 (§9): 角度σを距離・濁り依存に置換 ---
+    if optical_model is not None:
+        s_ang = optical_angular_sigma(d_optical, optical_model)
+        eff[1] = s_ang
+        eff[2] = s_ang
+
     z = z + rng.normal(0.0, eff, size=3)
 
     # --- 外れ値 (§8.3): 各成分が確率 outlier_rate で大きく飛ぶ ---
@@ -165,6 +224,13 @@ def simulate_observation_realistic(p_child, sigma, seed, p_parent=None,
         for i in range(3):
             if rng.random() < outlier_rate:
                 z[i] += rng.normal(0.0, outlier_scale * eff[i])
+
+    # --- 光学ドロップアウト (§9): SNR 低下でビーコン見失い -> 角度が飛ぶ外れ値 ---
+    if optical_model is not None:
+        if rng.random() < optical_dropout_prob(d_optical, optical_model):
+            jump = optical_model["dropout_jump"]
+            z[1] += rng.uniform(-jump, jump)
+            z[2] += rng.uniform(-jump, jump)
     return z
 
 
