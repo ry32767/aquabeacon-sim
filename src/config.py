@@ -153,6 +153,22 @@ SENS_STEREO_STANDOFFS = list(_get("sensitivity", "stereo_standoffs", [1.0, 2.0, 
 SENS_STEREO_BASELINES = list(_get("sensitivity", "stereo_baselines", [0.05, 0.1, 0.2, 0.4]))
 
 # =====================================================================
+# 設計スペックシート (run_spec.py): 目標精度と探索グリッド
+# =====================================================================
+SPEC_POS_RMSE_TARGET_MM = float(_get("spec", "pos_rmse_target_mm", 100.0))
+SPEC_POS_BEARING = np.asarray(_get("spec", "pos_bearing", [0.6, 0.3, -0.75]), dtype=float)
+SPEC_POS_RANGE_GRID = list(_get("spec", "pos_range_grid", [5, 8, 10, 12.5, 15, 18, 22]))
+SPEC_POS_NOMINAL_RANGE = float(_get("spec", "pos_nominal_range", 12.5))
+SPEC_POS_SIGMA_ANG_GRID = list(_get("spec", "pos_sigma_ang_grid", [0.1, 0.2, 0.3, 0.5, 0.8, 1.2]))
+SPEC_GEOM_DIM_TARGET_MM = float(_get("spec", "geom_dim_target_mm", 30.0))
+SPEC_GEOM_STANDOFF_GRID = list(_get("spec", "geom_standoff_grid", [1.0, 1.5, 2.0, 3.0, 4.0, 6.0]))
+SPEC_GEOM_BASELINE_GRID = list(_get("spec", "geom_baseline_grid", [0.05, 0.1, 0.15, 0.2, 0.3, 0.4]))
+SPEC_GEOM_SIGMA_CAM_GRID = list(_get("spec", "geom_sigma_cam_grid", [0.03, 0.05, 0.1, 0.2, 0.3]))
+SPEC_GEOM_LOOKS_GRID = list(_get("spec", "geom_looks_grid", [1, 3, 5, 10, 15, 20, 30]))
+SPEC_GEOM_N_PER_EDGE = int(_get("spec", "geom_n_per_edge", 5))
+SPEC_MC_N = int(_get("spec", "mc_n", 800))
+
+# =====================================================================
 # 可視化 (run_visualize のシーン規模)
 # =====================================================================
 VIZ_CLOUD_N = int(_get("visualization", "cloud_n", 1500))

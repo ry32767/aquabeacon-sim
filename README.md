@@ -45,8 +45,27 @@ pytest tests/test_math_cases.py -v  # 数式の数値検証(最優先)
 python scripts/run_minimum.py       # ミニマム: 単時刻の位置推定+RMSE
 python scripts/run_mapping.py       # サクセス: 複数時刻+IMUの軌道推定 / キューブ寸法・体積
 python scripts/run_sensitivity.py   # 感度解析(ノイズ・距離・角度を振る)
+python scripts/run_spec.py          # 設計スペックシート: 目標精度→設計要求を逆算
 python scripts/run_visualize.py     # 発表用の図・アニメ生成 (figures/ にシナリオ別フォルダで出力)
 ```
+
+`run_mapping.py` / `run_spec.py` は数値結果を **`results/`** に JSON / CSV でも保存する
+(後から比較・解析するため。`results/` は `.gitignore` 済み)。
+
+### 設計スペックシート (`run_spec.py`)
+
+感度掃引を「**目標精度を満たすための設計要求**」に逆算する MBD の成果物。
+例: 「測位 RMSE ≤ 100 mm には 距離 d ≤ 15 m / 角度ノイズ ≤ 0.36°」
+「マッピング寸法誤差 ≤ 30 mm には standoff ≤ 1.7 m / ベースライン ≥ 0.14 m /
+σ_cam ≤ 0.08° / フレーム ≥ 30」。目標値と探索グリッドは `config.toml [spec]` で編集。
+出力は表 (コンソール) + `figures/spec/design_spec.png` + `results/run_spec.{json,csv}`。
+
+### 現実的センサ誤差モデル (`config.toml [error_model]`)
+
+実機に近い検証用に、理想 (零平均ガウス) へ重ねる誤差源を用意 (MATH_SPEC §8):
+系統バイアス・距離依存ノイズ・外れ値・**音速ズレ**・**光学/音響の時刻同期**。
+既定はすべて『理想』で従来と完全一致。`[error_model] enable = true` で有効化すると、
+`run_spec.py` の測位スペックがこの誤差込みで厳しくなる (例: バイアス5cm+音速ズレで 90→144 mm)。
 
 ## MBD の構造
 
