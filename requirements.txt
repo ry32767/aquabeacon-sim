@@ -1,0 +1,8 @@
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+pillow>=9.0          # 可視化アニメの GIF 書き出し (matplotlib PillowWriter)
+pytest>=7.4
+# 任意: MP4 書き出しに ffmpeg (システムにインストール。無ければ GIF のみ)
+# Stage 2 (geometry) で使用:
+# open3d>=0.17

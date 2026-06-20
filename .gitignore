@@ -1,0 +1,35 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- テスト・キャッシュ ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- 仮想環境 ---
+.venv/
+venv/
+env/
+
+# --- 生成物 (再生成可能なので追跡しない) ---
+# figures/ : run_visualize.py が生成する図・アニメ
+# results/ : run_*.py が出力する CSV/JSON の結果
+figures/
+results/
+
+# --- エディタ・OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Claude Code ローカル設定 ---
+.claude/

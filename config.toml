@@ -1,0 +1,79 @@
+# =====================================================================
+# config.toml — AquaBeacon シミュレーションのパラメータ一括管理
+# =====================================================================
+# ここを編集すると、全スクリプト (run_minimum / run_mapping /
+# run_sensitivity / run_visualize) と全テストの既定値に反映されます。
+#
+# - 値の意味・単位はコメント参照。角度は [deg] で書く (内部で rad に変換)。
+# - 行ごと消す / セクションごと消すと、src/config.py のデフォルトが使われます。
+# - 配列は [x, y, z] のように書く。真偽値は true / false。
+# - 編集後はそのまま `python scripts/run_*.py` を実行すれば反映されます。
+# ---------------------------------------------------------------------
+
+[coords]                              # 座標系 (MATH_SPEC §0)
+p_parent = [0.0, 0.0, 0.0]            # 親機位置 [m] (原点固定)
+observe_from_parent = true            # true: 親機→子機 / false: 子機→親機
+
+[noise]                               # 観測ノイズ (MATH_SPEC §7)
+sigma_dist   = 0.03                   # 距離精度 [m]
+sigma_az_deg = 0.3                    # 方位角精度 [deg]
+sigma_el_deg = 0.3                    # 仰角精度 [deg]
+sigma_imu    = 0.02                   # IMU 変位ノイズ [m/軸] (Stage2 §5)
+
+[rates]                               # 更新周期 (参考)
+acoustic_hz = 5.0                     # 音響測距
+optical_hz  = 30.0                    # 光学追跡
+
+[truth]                               # Stage1 真値
+child_position = [6.0, 8.0, -7.5]     # 子機真位置 [m] (d=12.5m)
+
+[cube]                                # Stage2 既知キューブ (MATH_SPEC §6)
+side       = 0.5                      # 一辺 L_true [m]
+center     = [6.0, 8.0, -7.5]         # 中心 [m]
+n_per_edge = 7                        # 表面点の格子分割 (1辺あたり)
+
+[stereo]                              # 子機の2カメラ(ステレオ)ジオメトリ (MATH_SPEC §6.2)
+baseline      = 0.10                  # 左右カメラ間のベースライン [m]
+sigma_cam_deg = 0.1                   # 1カメラの角度ノイズ [deg]
+                                      #   ※接近撮影のマッピング用カメラは画素分解能が高く、
+                                      #     親機トラッキング(0.3°)より細かい。実カメラ値で更新。
+standoff      = 2.0                   # 対象表面からの観測距離 [m] (子機は接近して撮る)
+up_axis       = [0.0, 0.0, 1.0]       # ベースライン方向を決める補助軸 (視線と直交化)
+
+[trajectory]                          # Stage2 ダブル芝刈り軌道 (run_mapping)
+area        = [8.0, 6.0]              # 掃引範囲 W,H [m]
+depth       = -7.5                    # 深さ [m]
+n_legs      = 4                       # レグ本数
+pts_per_leg = 12                      # 1レグの点数
+origin      = [2.0, 5.0]              # 開始隅 [m]
+
+[demo_trajectory]                     # Stage1 可視化用の簡易芝刈り (scene4)
+n_points     = 60
+area         = [8.0, 6.0]
+depth        = -7.5
+n_legs       = 4
+origin       = [2.0, -3.0]
+depth_ripple = 0.6                    # 3D 表示用の微小深さ変動 [m]
+
+[montecarlo]                          # モンテカルロ
+n    = 2000                           # 1条件あたりの試行回数
+seed = 0                              # 既定シード (再現性)
+
+[mapping]                             # run_mapping のキューブ計測
+looks = 30                            # 多視点平均の再観測回数
+
+[sensitivity]                         # run_sensitivity の振り幅
+depth_z    = [-2, -5, -7.5, -10, -15] # 距離掃引: 深さ z [m] (斜め配置)
+angle_degs = [0.1, 0.3, 0.5, 1.0]     # 角度ノイズ掃引 [deg]
+elev_degs  = [-89, -80, -60, -45, -20]# 仰角掃引 [deg]
+nadir_d    = 10.0                     # 仰角掃引の距離 [m]
+stereo_standoffs = [1.0, 2.0, 3.0, 5.0, 8.0]   # ステレオ: 距離(standoff)掃引 [m]
+stereo_baselines = [0.05, 0.1, 0.2, 0.4]       # ステレオ: ベースライン掃引 [m]
+
+[visualization]                       # run_visualize のシーン規模
+cloud_n         = 1500                # scene1 3D推定クラウドの試行数
+cube_n_per_edge = 7                   # scene6/8/10 キューブ点群の分割
+looks           = 20                  # scene6 多視点平均の回数
+max_looks       = 30                  # scene8/10 最大再観測回数
+rotate_frames   = 72                  # 回転アニメのフレーム数
+sens_dists      = [3, 6, 9, 12.5, 16] # scene10 距離掃引 [m]

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aquabeacon-sim"
+version = "0.2.0"
+description = "光学追跡(角度)×音響測距(距離)による水中位置推定とジオメトリ生成の MBD シミュレーション"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "AquaBeacon" }]
+keywords = ["underwater", "localization", "stereo", "model-based-development", "simulation"]
+
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "pillow>=9.0",
+]
+
+[project.optional-dependencies]
+# config.toml の読込は Python 3.11+ の標準 tomllib を使う。3.10 では tomli が必要。
+toml310 = ["tomli>=2.0; python_version < '3.11'"]
+# Stage 2 geometry の発展用 (任意)
+geometry = ["open3d>=0.17"]
+# 開発・CI 用
+dev = ["pytest>=7.4"]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
