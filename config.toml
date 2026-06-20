@@ -48,6 +48,12 @@ sound_speed_assumed = 1500.0          # 推定側が仮定する音速 [m/s]
 acoustic_latency_s = 0.0              # 音響が光学より遅れる時間 [s]
                                       #   この間に子機が動くと距離と角度が別時刻を指す
 
+[estimator]                           # ロバスト推定 (MATH_SPEC §4.4)
+loss    = "linear"                    # "linear"(純L2,既定) / "huber" / "cauchy" / "soft_l1" / "arctan"
+f_scale = 1.345                       # ロバスト損失の内れ値しきい値 [σ単位] (Huber標準=1.345)
+                                      #   外れ値(§8.3)に強くするには "huber" や "cauchy" を選ぶ。
+                                      #   冗長性のある軌道推定(IMU拘束)で効く。
+
 [truth]                               # Stage1 真値
 child_position = [6.0, 8.0, -7.5]     # 子機真位置 [m] (d=12.5m)
 

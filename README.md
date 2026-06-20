@@ -46,6 +46,7 @@ python scripts/run_minimum.py       # ミニマム: 単時刻の位置推定+RMS
 python scripts/run_mapping.py       # サクセス: 複数時刻+IMUの軌道推定 / キューブ寸法・体積
 python scripts/run_sensitivity.py   # 感度解析(ノイズ・距離・角度を振る)
 python scripts/run_spec.py          # 設計スペックシート: 目標精度→設計要求を逆算
+python scripts/run_robust.py        # ロバスト推定デモ: 外れ値下で L2 vs Huber/Cauchy
 python scripts/run_visualize.py     # 発表用の図・アニメ生成 (figures/ にシナリオ別フォルダで出力)
 ```
 
@@ -59,6 +60,16 @@ python scripts/run_visualize.py     # 発表用の図・アニメ生成 (figures
 「マッピング寸法誤差 ≤ 30 mm には standoff ≤ 1.7 m / ベースライン ≥ 0.14 m /
 σ_cam ≤ 0.08° / フレーム ≥ 30」。目標値と探索グリッドは `config.toml [spec]` で編集。
 出力は表 (コンソール) + `figures/spec/design_spec.png` + `results/run_spec.{json,csv}`。
+
+### ロバスト推定 (`config.toml [estimator]`)
+
+外れ値 (ライト見失い・音響マルチパス, MATH_SPEC §8.3) に強い M推定 (MATH_SPEC §4.4)。
+`estimate_position` / `estimate_trajectory` に `loss` 引数を追加 (`"linear"`(既定,純L2) /
+`"huber"` / `"cauchy"` / `"soft_l1"`)。**既定 `linear` は従来と完全一致** (後方互換)。
+ロバスト損失は redescending の悪い極小を避けるため、内部で **L2解からウォームスタート**する。
+冗長性のある **IMU拘束つき軌道推定で効く** (単時刻は観測3・未知数3で冗長性ゼロのため効かない)。
+`run_robust.py` のデモでは、外れ値下で **RMSE 411 → 30 mm (93%改善)**。
+`config.toml [estimator] loss` で全スクリプト既定を切替可能。
 
 ### 現実的センサ誤差モデル (`config.toml [error_model]`)
 

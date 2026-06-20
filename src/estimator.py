@@ -41,18 +41,49 @@ def weight_matrix(sigma_dist, sigma_az, sigma_el):
     return np.diag([1.0 / sigma_dist**2, 1.0 / sigma_az**2, 1.0 / sigma_el**2])
 
 
+# ロバスト損失 (MATH_SPEC §4.4)。'linear' は従来の純 L2 (最小二乗)。
+# それ以外は M推定 (外れ値の影響を抑える)。残差は sqrt(W) で σ 正規化済みなので、
+# f_scale は「σ の何倍までを内れ値とみなすか」を表す (Huber 既定 1.345σ)。
+_ROBUST_LOSSES = ("linear", "soft_l1", "huber", "cauchy", "arctan")
+
+
+def _solve_least_squares(fun, x0, loss="linear", f_scale=1.345):
+    """残差関数 fun を最小化する。loss='linear' なら従来の LM、それ以外は TRF + ロバスト損失。
+
+    scipy の least_squares はロバスト損失 (huber 等) を method='trf'/'dogbox' でのみ
+    サポートする (LM は純 L2 のみ)。loss='linear' のときは従来挙動を完全に保つため LM を使う。
+
+    ロバスト損失 (特に cauchy のような redescending 系) は初期値依存が強く、外れ値で
+    初期値が汚れていると悪い極小に落ちる。これを避けるため、まず純 L2 (LM) で温めた解を
+    初期値にして robust を精緻化する 2段解法にする (warm start)。loss='linear' は1回解くだけ。
+    """
+    if loss not in _ROBUST_LOSSES:
+        raise ValueError(f"loss は {_ROBUST_LOSSES} のいずれか (受領: {loss!r})")
+    if loss == "linear":
+        return least_squares(fun, x0, method="lm")
+    warm = least_squares(fun, x0, method="lm")            # L2 で温める
+    return least_squares(fun, warm.x, method="trf", loss=loss, f_scale=f_scale)
+
+
 def estimate_position(z_meas, sigma, p_parent=None,
-                      observe_from_parent=True, x0=None):
-    """重み付き最小二乗で子機位置を推定する (MATH_SPEC §4.2)。
+                      observe_from_parent=True, x0=None,
+                      loss="linear", f_scale=1.345):
+    """重み付き(ロバスト)最小二乗で子機位置を推定する (MATH_SPEC §4.2, §4.4)。
 
     z_meas : 観測 (d, theta, phi)
     sigma  : (sigma_dist [m], sigma_az [rad], sigma_el [rad])
     p_parent: 親機位置 (既知)。None なら原点。
     x0     : 初期値。None なら §2 の逆変換で算出する。
+    loss   : 'linear' (純L2, 既定) / 'huber' / 'cauchy' / 'soft_l1' / 'arctan'。
+    f_scale: ロバスト損失の内れ値しきい値 (σ単位, 既定 1.345)。loss='linear' では無視。
     戻り値 : 推定位置 x_hat=(x,y,z)
 
     least_squares は残差ベクトルを最小化するので、重み W=diag(1/sigma^2) の平方根
     sqrt(W)=diag(1/sigma) を残差に掛けて渡す (r^T W r と等価)。
+
+    注意 (冗長性): 単時刻は観測3・未知数3で**冗長性が無い**ため、ロバスト損失でも
+    外れ値を識別・棄却できない (どれが外れ値か決められない)。ロバスト推定が効くのは
+    冗長性のある estimate_trajectory (IMU拘束つき複数時刻) の方。引数はAPI一貫性のため用意。
     """
     if p_parent is None:
         p_parent = np.zeros(3)
@@ -66,20 +97,27 @@ def estimate_position(z_meas, sigma, p_parent=None,
     def weighted_residual(x_state):
         return sqrtW * residual(x_state, z_meas, p_parent, observe_from_parent)
 
-    sol = least_squares(weighted_residual, x0, method='lm')
+    sol = _solve_least_squares(weighted_residual, x0, loss=loss, f_scale=f_scale)
     return sol.x
 
 
 def estimate_trajectory(z_seq, sigma_obs, imu_deltas=None, sigma_imu=None,
-                        p_parent=None, observe_from_parent=True, x0=None):
-    """複数時刻の観測 (+ IMU 拘束) から子機軌道を一括推定する (MATH_SPEC §5)。
+                        p_parent=None, observe_from_parent=True, x0=None,
+                        loss="linear", f_scale=1.345):
+    """複数時刻の観測 (+ IMU 拘束) から子機軌道を一括推定する (MATH_SPEC §5, §4.4)。
 
     z_seq     : (n,3) 各時刻の観測 (d, theta, phi)
     sigma_obs : (sigma_dist, sigma_az, sigma_el) 観測ノイズ
     imu_deltas: (n-1,3) 時刻間変位 delta_p の IMU 観測。None なら IMU 拘束なし。
     sigma_imu : IMU 変位ノイズ (スカラ or (3,))。imu_deltas を使うとき必須。
     x0        : 初期軌道 (n,3)。None なら各時刻を §2 逆変換で初期化する。
+    loss      : 'linear' (純L2, 既定) / 'huber' / 'cauchy' / 'soft_l1' / 'arctan'。
+    f_scale   : ロバスト損失の内れ値しきい値 (σ単位, 既定 1.345)。loss='linear' では無視。
     戻り値    : 推定軌道 X_hat (n,3)
+
+    外れ値対策 (MATH_SPEC §4.4): IMU 拘束が時刻間を繋ぎ冗長性を作るので、ある時刻の
+    観測が外れ値 (ライト見失い・音響マルチパス) でも、loss='huber'/'cauchy' なら
+    その残差を自動で減衰し、軌道全体の破綻を防ぐ。
 
     目的関数 (MATH_SPEC §5.3):
         X_hat = argmin_X  Σ_k ||r_obs_k||^2_{W_obs} + Σ_k ||r_imu_k||^2_{W_imu}
@@ -122,5 +160,6 @@ def estimate_trajectory(z_seq, sigma_obs, imu_deltas=None, sigma_imu=None,
                 parts.append(sqrtW_imu * ((X[k + 1] - X[k]) - imu_deltas[k]))
         return np.concatenate(parts)
 
-    sol = least_squares(stacked_residual, x0.ravel(), method='lm')
+    sol = _solve_least_squares(stacked_residual, x0.ravel(), loss=loss,
+                               f_scale=f_scale)
     return sol.x.reshape(n, 3)
