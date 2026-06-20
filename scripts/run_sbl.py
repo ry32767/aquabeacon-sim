@@ -47,7 +47,7 @@ plt.rcParams["axes.unicode_minus"] = False
 DEPTHS = [5, 8, 11, 14, 17, 20]
 BASELINES = [1.0, 2.0, 4.0, 6.0, 8.0]
 N_SEEDS = 5
-DEMO_DEPTH = 14.0
+DEMO_DEPTH = 10.0           # 3D デモ (a) と ベースライン掃引 (c) の固定水深
 
 
 def Lbl(ja, en):
@@ -124,6 +124,7 @@ def main():
 
     # (a) 3D デモ
     r_demo, est_demo, traj_demo = _sbl_rmse(DEMO_DEPTH, SBL_ANCHORS, SEED)
+    fb_demo = _avg(lambda s: _fallback_rmse(DEMO_DEPTH, s))   # 同深さの単一距離 (比較用)
     print(f"\n--- 3D軌道デモ 深さ{DEMO_DEPTH:.0f}m ---")
     print(f"  SBL RMSE total = {r_demo['total']*1000:.0f} mm "
           f"(x{r_demo['x']*1000:.0f}/y{r_demo['y']*1000:.0f}/z{r_demo['z']*1000:.0f})")
@@ -197,9 +198,9 @@ def main():
                  ("run_sbl.csv", "水深別 RMSE (SBL/光学/単一距離)")],
         results={f"SBL 深さ{DEMO_DEPTH:.0f}m RMSE": f"{r_demo['total']*1000:.0f} mm "
                  f"(z {r_demo['z']*1000:.0f} mm)",
-                 "対 単一距離フォールバック":
-                 f"SBL {sbl_d[DEPTHS.index(14)]:.0f} mm vs 単一 {fb_d[DEPTHS.index(14)]:.0f} mm "
-                 f"(深さ14m)"},
+                 f"対 単一距離 (深さ{DEMO_DEPTH:.0f}m)":
+                 f"SBL {sbl_b[BASELINES.index(SBL_BASELINE)]:.0f} mm vs 単一 {fb_demo:.0f} mm"
+                 if SBL_BASELINE in BASELINES else f"SBL {r_demo['total']*1000:.0f} mm"},
         meta={"seed": SEED, "baseline_m": SBL_BASELINE}, math_spec="§13")
     print(f"\n出力 : {FIGDIR}")
     print("\n完了。SBL(4点多辺測量)が光学なしに3D測位でき、単一距離より高精度なことを確認。")
