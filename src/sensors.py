@@ -87,6 +87,113 @@ def simulate_observation_sequence(trajectory, sigma, seed, p_parent=None,
     return z
 
 
+# ----------------------------------------------------------------------------
+# 現実的センサ誤差モデル (MATH_SPEC §8)
+#
+# 理想モデル (simulate_observation) に、実機で効く誤差源を重ねる:
+#   §8.1 系統バイアス        : z に定数オフセット (取付・校正誤差)
+#   §8.2 距離依存ノイズ      : σ(d) = σ0 * (1 + k*d) (遠いほど悪化)
+#   §8.3 外れ値              : 確率 p で大きな誤差 (ライト見失い・音響マルチパス)
+#   §8.4 音速ズレ            : d_meas = d_true * (c_assumed / c_true) (距離の系統スケール)
+#   §8.5 時刻同期            : 音響は latency 秒前の位置の距離 (その間に子機が動く)
+#
+# すべての既定値は『理想』で、simulate_observation と完全一致する
+#   (bias=0, growth=0, outlier_rate=0, c_true=c_assumed, latency=0)。
+# ----------------------------------------------------------------------------
+def effective_sigma(d, sigma, range_growth_per_m=0.0, dist_growth_per_m=0.0):
+    """距離 d における有効ノイズ標準偏差 (σ_d, σ_az, σ_el) を返す (MATH_SPEC §8.2)。
+
+    σ_d(d)   = σ_d0   * (1 + dist_growth_per_m  * d)
+    σ_ang(d) = σ_ang0 * (1 + range_growth_per_m * d)   (方位・仰角の両方)
+    growth=0 なら sigma をそのまま返す (理想)。
+    """
+    sd, saz, sel = sigma
+    fa = 1.0 + range_growth_per_m * d
+    fd = 1.0 + dist_growth_per_m * d
+    return np.array([sd * fd, saz * fa, sel * fa])
+
+
+def simulate_observation_realistic(p_child, sigma, seed, p_parent=None,
+                                   observe_from_parent=True, *,
+                                   bias=(0.0, 0.0, 0.0),
+                                   range_growth_per_m=0.0,
+                                   dist_growth_per_m=0.0,
+                                   outlier_rate=0.0,
+                                   outlier_scale=20.0,
+                                   sound_speed_true=1500.0,
+                                   sound_speed_assumed=1500.0,
+                                   acoustic_latency_s=0.0,
+                                   velocity=None):
+    """現実的な誤差を含むノイズ付き観測 (d, theta, phi) を生成する (MATH_SPEC §8)。
+
+    既定値はすべて『理想』で、simulate_observation(同 seed) と一致する。
+    config.ERROR_MODEL をキーワード展開してそのまま渡せる:
+        simulate_observation_realistic(p, SIGMA, seed, **ERROR_MODEL)
+
+    p_child            : 真の子機位置 [m] (光学観測の時刻 t における位置)
+    velocity           : 子機速度 [m/s] (3,)。時刻同期 (§8.5) で使用。None で 0。
+    acoustic_latency_s : 音響が光学より遅れる時間 [s]。音響距離は t-latency の位置で測る。
+    その他のキーワードは §8 各項を参照。
+    """
+    if p_parent is None:
+        p_parent = np.zeros(3)
+    if velocity is None:
+        velocity = np.zeros(3)
+    velocity = np.asarray(velocity, dtype=float)
+    rng = np.random.default_rng(seed)
+
+    # --- 角度は光学時刻 t の位置から、距離は音響時刻 t-latency の位置から (§8.5) ---
+    v_opt = relative_vector(p_child, p_parent, observe_from_parent)
+    _, theta_true, phi_true = forward_observation(v_opt)
+    d_optical = np.linalg.norm(v_opt)                 # 有効σの距離基準にはこちらを使う
+
+    p_acoustic = np.asarray(p_child, float) - velocity * acoustic_latency_s
+    v_aco = relative_vector(p_acoustic, p_parent, observe_from_parent)
+    d_true = np.linalg.norm(v_aco)
+
+    # --- 音速ズレ: 測距は飛行時間×仮定音速 = d_true * c_assumed/c_true (§8.4) ---
+    d_meas = d_true * (sound_speed_assumed / sound_speed_true)
+
+    z = np.array([d_meas, theta_true, phi_true]) + np.asarray(bias, dtype=float)
+
+    # --- 距離依存ノイズ (§8.2) を有効σとして加える (§7 の零平均ガウス) ---
+    eff = effective_sigma(d_optical, sigma, range_growth_per_m, dist_growth_per_m)
+    z = z + rng.normal(0.0, eff, size=3)
+
+    # --- 外れ値 (§8.3): 各成分が確率 outlier_rate で大きく飛ぶ ---
+    if outlier_rate > 0.0:
+        for i in range(3):
+            if rng.random() < outlier_rate:
+                z[i] += rng.normal(0.0, outlier_scale * eff[i])
+    return z
+
+
+def simulate_observation_sequence_realistic(trajectory, sigma, seed,
+                                            p_parent=None,
+                                            observe_from_parent=True,
+                                            dt=None, **model):
+    """軌道 (n,3) に現実的誤差付き観測列を生成して (n,3) で返す (MATH_SPEC §8)。
+
+    時刻同期 (§8.5) のために各時刻の速度を軌道の差分から推定する:
+        velocity_k ~= (p_{k+1} - p_k) / dt,  dt は光学サンプリング間隔 [s]。
+    dt=None なら 1/OPTICAL_RATE_HZ を使う。model は simulate_observation_realistic
+    のキーワード (config.ERROR_MODEL を ** 展開して渡せる)。
+    """
+    trajectory = np.asarray(trajectory, dtype=float)
+    n = len(trajectory)
+    if dt is None:
+        from src.config import OPTICAL_RATE_HZ
+        dt = 1.0 / OPTICAL_RATE_HZ
+    # 前進差分で速度を近似 (末端は後退差分)
+    vel = np.gradient(trajectory, dt, axis=0) if n >= 2 else np.zeros_like(trajectory)
+    z = np.empty_like(trajectory)
+    for k, p in enumerate(trajectory):
+        z[k] = simulate_observation_realistic(
+            p, sigma, seed=seed + k, p_parent=p_parent,
+            observe_from_parent=observe_from_parent, velocity=vel[k], **model)
+    return z
+
+
 def _bearing(v):
     """相対ベクトル v -> (az, el) [rad]。forward_observation の角度部分 (距離は捨てる)。"""
     vx, vy, vz = v

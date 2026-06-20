@@ -71,6 +71,27 @@ ACOUSTIC_RATE_HZ = float(_get("rates", "acoustic_hz", 5.0))
 OPTICAL_RATE_HZ = float(_get("rates", "optical_hz", 30.0))
 
 # =====================================================================
+# 現実的センサ誤差モデル (MATH_SPEC §8)
+# 既定はすべて「理想」で、零平均ガウスの従来挙動と一致する (enable=False)。
+# ERROR_MODEL は sensors.simulate_observation_realistic にそのまま渡せる辞書。
+# =====================================================================
+ERROR_MODEL_ENABLE = bool(_get("error_model", "enable", False))
+ERROR_MODEL = {
+    "bias": (
+        float(_get("error_model", "bias_dist", 0.0)),
+        np.deg2rad(float(_get("error_model", "bias_az_deg", 0.0))),
+        np.deg2rad(float(_get("error_model", "bias_el_deg", 0.0))),
+    ),
+    "range_growth_per_m": float(_get("error_model", "range_growth_per_m", 0.0)),
+    "dist_growth_per_m": float(_get("error_model", "dist_growth_per_m", 0.0)),
+    "outlier_rate": float(_get("error_model", "outlier_rate", 0.0)),
+    "outlier_scale": float(_get("error_model", "outlier_scale", 20.0)),
+    "sound_speed_true": float(_get("acoustic", "sound_speed_true", 1500.0)),
+    "sound_speed_assumed": float(_get("acoustic", "sound_speed_assumed", 1500.0)),
+    "acoustic_latency_s": float(_get("sync", "acoustic_latency_s", 0.0)),
+}
+
+# =====================================================================
 # 再現性
 # =====================================================================
 SEED = int(_get("montecarlo", "seed", 0))

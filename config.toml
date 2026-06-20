@@ -24,6 +24,30 @@ sigma_imu    = 0.02                   # IMU 変位ノイズ [m/軸] (Stage2 §5)
 acoustic_hz = 5.0                     # 音響測距
 optical_hz  = 30.0                    # 光学追跡
 
+# ---------------------------------------------------------------------
+# 現実的センサ誤差モデル (MATH_SPEC §8)
+#   既定値はすべて「理想」= 従来の零平均ガウスと完全一致するように選んである。
+#   enable=false の間は何も変わらない。実機に近い検証をするとき true にして各項を設定。
+# ---------------------------------------------------------------------
+[error_model]
+enable             = false            # true で下記の現実的誤差を有効化
+bias_dist          = 0.0              # 距離の系統バイアス [m] (取付・校正誤差)
+bias_az_deg        = 0.0              # 方位角の系統バイアス [deg]
+bias_el_deg        = 0.0              # 仰角の系統バイアス [deg]
+range_growth_per_m = 0.0              # 角度ノイズの距離依存 σ_ang(d)=σ_ang0*(1+k*d)
+dist_growth_per_m  = 0.0              # 距離ノイズの距離依存 σ_d(d)=σ_d0*(1+k*d)
+outlier_rate       = 0.0              # 1観測成分あたり外れ値が出る確率 (0〜1)
+outlier_scale      = 20.0             # 外れ値の大きさ (有効σの倍率)
+
+[acoustic]                            # 音響測距の音速 (MATH_SPEC §8.4)
+sound_speed_true    = 1500.0          # 真の水中音速 [m/s] (水温・塩分・水深で変化)
+sound_speed_assumed = 1500.0          # 推定側が仮定する音速 [m/s]
+                                      #   true と assumed のズレ = 距離の系統スケール誤差
+
+[sync]                                # 光学/音響の時刻同期 (MATH_SPEC §8.5)
+acoustic_latency_s = 0.0              # 音響が光学より遅れる時間 [s]
+                                      #   この間に子機が動くと距離と角度が別時刻を指す
+
 [truth]                               # Stage1 真値
 child_position = [6.0, 8.0, -7.5]     # 子機真位置 [m] (d=12.5m)
 
