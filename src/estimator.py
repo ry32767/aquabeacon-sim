@@ -290,6 +290,59 @@ def estimate_trajectory_acoustic_inertial(range_seq, sigma_dist, imu_deltas, sig
     return best
 
 
+def estimate_trajectory_sbl(range_seq, anchors, sigma_range, imu_deltas, sigma_imu,
+                            depth_seq, sigma_depth, p_parent=None, loss="linear",
+                            f_scale=1.345):
+    """SBL: 親機4トランスデューサへの距離 + IMU + 深度で子機軌道を推定する (MATH_SPEC §13)。
+
+    各時刻に複数アンカー (既知配置) への距離があるので、単時刻でも多辺測量で3D位置が定まる
+    (光学の方位は不要。方位グリッド探索も不要)。深度が鉛直 z を、IMU が時刻間を補強する。
+
+    range_seq : (n,M) 各時刻・各アンカーへの距離 [m]
+    anchors   : (M,3) トランスデューサの既知位置 [m] (親機座標)
+    sigma_range: 各測距ノイズ [m]
+    imu_deltas: (n-1,3) 世界座標の時刻間変位 [m]。None なら IMU 拘束なし。
+    depth_seq : (n,) 深度 [m, 下が正]。None なら深度拘束なし。
+    戻り値    : 推定軌道 X_hat (n,3)。truth は参照しない (MBD)。
+    """
+    if p_parent is None:
+        p_parent = np.zeros(3)
+    range_seq = np.asarray(range_seq, dtype=float)
+    anchors = np.asarray(anchors, dtype=float)
+    n, m = range_seq.shape
+    sqrtW_r = 1.0 / sigma_range
+    use_imu = imu_deltas is not None
+    if use_imu:
+        imu_deltas = np.asarray(imu_deltas, dtype=float)
+        sqrtW_imu = 1.0 / np.broadcast_to(np.asarray(sigma_imu, dtype=float), (3,))
+    use_depth = depth_seq is not None
+    if use_depth:
+        depth_seq = np.asarray(depth_seq, dtype=float).reshape(n)
+        sqrtW_depth = 1.0 / sigma_depth
+
+    # 初期値: 水平はアンカー配置の重心、鉛直は深度 (無ければ 0)
+    center = anchors.mean(axis=0)
+    x0 = np.tile(center, (n, 1))
+    x0[:, 2] = -depth_seq if use_depth else -1.0
+
+    def stacked(xflat):
+        X = xflat.reshape(n, 3)
+        parts = []
+        for k in range(n):       # 各アンカーへの距離残差 (多辺測量)
+            d_hat = np.linalg.norm(anchors - X[k], axis=1)
+            parts.append(sqrtW_r * (range_seq[k] - d_hat))
+        if use_imu:
+            for k in range(n - 1):
+                parts.append(sqrtW_imu * ((X[k + 1] - X[k]) - imu_deltas[k]))
+        if use_depth:
+            for k in range(n):
+                parts.append(np.array([sqrtW_depth * depth_residual(X[k], depth_seq[k])]))
+        return np.concatenate(parts)
+
+    sol = _solve_least_squares(stacked, x0.ravel(), loss=loss, f_scale=f_scale)
+    return sol.x.reshape(n, 3)
+
+
 def optical_health_mask(detected, threshold=0.2, hysteresis=0.05, window=5):
     """光学リンクの健全性から、各時刻で方位/仰角を使うか (use-optical) を決める (MATH_SPEC §12)。
 

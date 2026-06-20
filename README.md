@@ -50,6 +50,7 @@ python scripts/run_robust.py        # ロバスト推定デモ: 外れ値下で 
 python scripts/run_deepwater.py     # 深い水深(10-20m)テスト: 光減衰→精度劣化・見失い
 python scripts/run_depth.py         # 深度センサ融合デモ: z軸精度↑・単時刻ロバスト
 python scripts/run_no_optical.py    # 光学なしフォールバック: 距離+IMU+深度のみで測位
+python scripts/run_sbl.py           # SBL音響測位: 親機4トランスデューサの多辺測量 (比較手法)
 python scripts/run_opmap.py         # 2次元運用スペック: 濁り×水深の運用可能領域マップ
 python scripts/run_switch.py        # 光学↔フォールバック自動切替: プルーム通過で切替維持
 python scripts/run_visualize.py     # 発表用の図・アニメ生成 (results/visualize/ にシーン別フォルダ)
@@ -59,15 +60,21 @@ python scripts/run_visualize.py     # 発表用の図・アニメ生成 (results
 
 各シナリオ (`run_*.py`) の出力は **`results/<シナリオ>/`** に統合される
 (図 PNG/GIF/MP4 ・数値 JSON/CSV ・説明 `README.md`)。各フォルダの **`README.md` は自動生成**で、
-そのシナリオが何か・**実行時の `config.toml` 条件のスナップショット**・主な結果・生成物リンクを含む。
+シナリオの説明・**使用センサ**・**実行時の `config.toml` 条件**・主な結果・生成物リンクを含む。
+`results/README.md` には**全シナリオの使用センサ一覧 (マトリクス)** が自動生成される。
 `results/` は `.gitignore` 済み (再生成可能)。
 
 ```
 results/
+├── README.md     ← 全シナリオ × 使用センサ の一覧表 (自動生成)
 ├── mapping/  spec/  robust/  deepwater/  depth/
-├── no_optical/  opmap/  switch/  visualize/(positioning/ geometry/)
-└── 各フォルダ: <図> + run_*.json/csv + README.md (自動生成・条件説明)
+├── no_optical/  sbl/  opmap/  switch/  visualize/(positioning/ geometry/)
+└── 各フォルダ: <図> + run_*.json/csv + README.md (説明+使用センサ+条件)
 ```
+
+使用センサ一覧 (抜粋): 親機カメラ(光学角度) / 音響1点 / **SBL音響(4点)** / 子機ステレオ /
+IMU / 深度。例: `no_optical`=音響1点+IMU+深度、`sbl`=SBL音響+IMU+深度、`switch`=親機カメラ+
+音響1点+IMU+深度。詳細は `results/README.md`。
 
 ### 光学↔フォールバック 自動切替 (`config.toml [switch]`)
 
@@ -100,6 +107,16 @@ results/
 turbid では延伸せず (光ビーコンの**検出限界**が先に縛るため深度センサでは救えない)。
 深い水では精度律速 → 深度センサで延伸 → 最後は検出律速、という構造が読める。
 ミッション精度は `config.toml [spec] op_depth_target_mm`。図は `results/spec/operational_depth.png`。
+
+### SBL 音響測位 (親機4トランスデューサ・比較手法) (`config.toml [sbl]`)
+
+光学追跡の比較対象として、親機に音響トランスデューサを **4台** 既知配置 (一辺 `baseline` の正方形)
+で搭載し、各々が子機までの距離を測る **SBL (Short BaseLine)** (MATH_SPEC §13)。4点への距離 →
+**多辺測量で光学の方位なしに3D測位**できる。IMU・深度も併用。`estimator.estimate_trajectory_sbl`。
+単時刻でも4距離で可観測 (単一距離フォールバック §11 の方位不定が無い)。光を使わず濁り・深さに不感で、
+水平が直接定まるぶん単一距離より高精度。`run_sbl.py` (既定 4m アレイ): SBL 深さ14m で RMSE **52mm**
+(単一距離 86mm より良い)。アレイ一辺が広いほど高精度 (1m→8m で 72→42mm)。同一平面アレイは深い子機で
+z が弱く、深度センサが締める。
 
 ### 光学なしフォールバック (距離+IMU+深度のみ)
 

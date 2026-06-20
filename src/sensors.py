@@ -369,6 +369,38 @@ def simulate_depth_sequence(trajectory, sigma_depth, seed, bias=0.0):
     return out
 
 
+def simulate_sbl_ranges(p_child, anchors, sigma_range, seed):
+    """SBL: 親機の複数トランスデューサ (既知配置 anchors) への距離観測を返す (MATH_SPEC §13)。
+
+    各トランスデューサ i が子機までの距離 d_i = ||p_child - anchor_i|| を測る (音響飛行時間)。
+    4点以上の既知配置への距離 → 多辺測量で光学なしに3D位置が定まる。
+
+    p_child     : 真の子機位置 [m] (3,)
+    anchors     : (M,3) トランスデューサの既知位置 [m]
+    sigma_range : 各測距のノイズ標準偏差 [m]
+    seed        : 乱数シード (再現性)
+    戻り値      : (M,) 各アンカーへのノイズ付き距離
+    """
+    p_child = np.asarray(p_child, dtype=float)
+    anchors = np.asarray(anchors, dtype=float)
+    rng = np.random.default_rng(seed)
+    d_true = np.linalg.norm(anchors - p_child, axis=1)
+    return d_true + rng.normal(0.0, sigma_range, size=len(anchors))
+
+
+def simulate_sbl_range_sequence(trajectory, anchors, sigma_range, seed):
+    """軌道 (n,3) の各時刻に SBL 距離観測を生成して (n,M) で返す (MATH_SPEC §13)。
+
+    各時刻 k に seed+k を使い、独立かつ再現可能なノイズを与える。
+    """
+    trajectory = np.asarray(trajectory, dtype=float)
+    anchors = np.asarray(anchors, dtype=float)
+    out = np.empty((len(trajectory), len(anchors)))
+    for k, p in enumerate(trajectory):
+        out[k] = simulate_sbl_ranges(p, anchors, sigma_range, seed=seed + k)
+    return out
+
+
 def simulate_imu_displacements(trajectory, sigma_imu, seed):
     """IMU pre-integration による時刻間変位 delta_p の擬似観測を返す (n-1, 3) [m]  (MATH_SPEC §5)。
 

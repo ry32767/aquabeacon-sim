@@ -79,6 +79,14 @@ DEPTH_ENABLE = bool(_get("depth", "enable", False))
 SIGMA_DEPTH = float(_get("depth", "sigma_m", 0.05))     # 深度ノイズ [m]
 DEPTH_BIAS = float(_get("depth", "bias_m", 0.0))        # 深度バイアス [m]
 
+# SBL: 親機4トランスデューサ音響測位 (MATH_SPEC §13)。
+SBL_BASELINE = float(_get("sbl", "baseline", 4.0))      # アレイ一辺 [m]
+SBL_SIGMA_RANGE = float(_get("sbl", "sigma_range", SIGMA_DIST))   # 各測距ノイズ [m]
+# 親機 (原点, 水面) を中心に一辺 SBL_BASELINE の正方形 4 隅 (z=0) に配置。
+_sbl_b = SBL_BASELINE / 2.0
+SBL_ANCHORS = np.array([[_sbl_b, _sbl_b, 0.0], [_sbl_b, -_sbl_b, 0.0],
+                        [-_sbl_b, _sbl_b, 0.0], [-_sbl_b, -_sbl_b, 0.0]], dtype=float)
+
 # =====================================================================
 # 更新周期 (参考)
 # =====================================================================
