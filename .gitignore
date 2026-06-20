@@ -19,10 +19,10 @@ venv/
 env/
 
 # --- 生成物 (再生成可能なので追跡しない) ---
-# figures/ : run_visualize.py が生成する図・アニメ
-# results/ : run_*.py が出力する CSV/JSON の結果
-figures/
+# results/ : 各シナリオ run_*.py の出力 (図 + JSON/CSV + 自動生成 README.md) を統合
+# figures/ : 旧出力先 (現在は results/ に統合。残っていても無視)
 results/
+figures/
 
 # --- エディタ・OS ---
 .vscode/

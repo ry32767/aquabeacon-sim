@@ -34,11 +34,10 @@ from src.sensors import (simulate_observation_sequence,
                          optical_angular_sigma, optical_dropout_prob)
 from src.estimator import (estimate_trajectory, estimate_trajectory_acoustic_inertial)
 from src.evaluation import rmse_xyz
-from src.results_io import write_json, write_csv
+from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIGDIR = os.path.join(ROOT, "figures", "opmap")
-os.makedirs(FIGDIR, exist_ok=True)
+FIGDIR = scenario_dir("opmap")
 _JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
                   "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
 _available = {f.name for f in fm.fontManager.ttflist}
@@ -190,7 +189,7 @@ def main():
         "region": region.tolist(), "region_names": names,
         "fallback_rmse_mm": {("%.1f" % d): fb[d] for d in DEPTHS},
     }
-    jpath = write_json("run_opmap", payload,
+    jpath = write_json("opmap/run_opmap", payload,
                        meta={"seed": int(SEED), "n_seeds": N_SEEDS,
                              "script": "run_opmap.py"})
     rows = []
@@ -198,8 +197,22 @@ def main():
         for j, d in enumerate(DEPTHS):
             rows.append({"clarity_c": round(c, 3), "depth_m": round(d, 1),
                          "region": names[region[i, j]]})
-    cpath = write_csv("run_opmap", rows, header=["clarity_c", "depth_m", "region"])
-    print(f"\n図   : {png}\nJSON : {jpath}\nCSV  : {cpath}")
+    cpath = write_csv("opmap/run_opmap", rows, header=["clarity_c", "depth_m", "region"])
+    write_report(
+        "opmap", "2次元運用スペック (濁り×水深の運用可能領域)",
+        "水深 × 濁り c の格子で、各条件をどのモードで運用できるかを3色で塗り分ける:\n"
+        "緑=光学 (見失い率 <= しきい値 かつ目標精度)、金=フォールバック (光学不可だが距離+IMU+深度\n"
+        "§11 で目標達成→自動切替で継続)、赤=運用不可。光学領域は濁り・深さで縮み、フォールバックは\n"
+        "光を使わず濁り非依存で広く覆う。破線は切替境界 (見失い率=しきい値)。自動切替(§12)の判断面。",
+        condition_sections=["noise", "optical", "switch", "depth", "spec"],
+        outputs=[("operational_map.png", "濁り×水深の運用可能領域マップ"),
+                 ("run_opmap.json", "領域格子とフォールバックRMSE"),
+                 ("run_opmap.csv", "セルごとの運用モード")],
+        results={"目標精度": f"{TARGET:.0f} mm",
+                 "切替しきい値 (見失い率)": f"{P_SWITCH:.2f}",
+                 "格子": f"水深{len(DEPTHS)} × 濁り{len(CLARITIES)}"},
+        meta={"seed": SEED, "n_seeds": N_SEEDS}, math_spec="§9-§12")
+    print(f"\n出力 : {FIGDIR}")
     print("\n完了。濁り×水深の運用可能領域を3色で塗り分け。金=フォールバック切替で継続可。")
 
 

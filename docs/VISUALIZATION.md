@@ -1,15 +1,17 @@
 # VISUALIZATION.md — 可視化仕様 (発表・デモ用)
 
 推定結果を**人に見せる**ための図・アニメーションの仕様。
-生成は `scripts/run_visualize.py`、出力は `figures/` 以下。
+生成は `scripts/run_visualize.py`、出力は `results/visualize/` 以下
+(他シナリオと同様に `results/<シナリオ>/` へ統合。自動生成の `README.md` 付き)。
 
 ## 出力フォルダ構成 (テストシナリオごとに分割)
 
-`figures/` は**シナリオ (シーン) ごとにサブフォルダ**へ分けて出力する。
+`results/visualize/` は**シーンごとにサブフォルダ**へ分けて出力する。
 トップ階層は本番ハードの2系統 (測位=親機1カメラ / ジオメトリ=子機ステレオ) でグループ化:
 
 ```
-figures/
+results/visualize/
+├── README.md                 # 自動生成 (条件スナップショット + シーン一覧)
 ├── positioning/              # 親機カメラ(角度) + 音響(距離) による位置・軌道推定
 │   ├── 1_cloud3d/            # scene1  cloud3d.png + cloud3d_rotate.gif/.mp4
 │   ├── 2_sensitivity/        # scene2  sensitivity.png

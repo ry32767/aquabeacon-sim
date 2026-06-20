@@ -51,14 +51,13 @@ from src.sensors import (simulate_observation, simulate_observation_realistic,
 from src.estimator import estimate_position
 from src.geometry import stereo_triangulate, robust_cube_side_estimate
 from src.evaluation import (monte_carlo_rmse, rmse_xyz, dimension_error_mm)
-from src.results_io import write_json, write_csv
+from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 CLARITY_LABEL = {0.05: "clear", 0.3: "coastal", 0.5: "coastal+", 1.0: "turbid"}
 
 # --- 出力先・日本語フォント ---------------------------------------------------
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIGDIR = os.path.join(ROOT, "figures", "spec")
-os.makedirs(FIGDIR, exist_ok=True)
+FIGDIR = scenario_dir("spec")
 _JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
                   "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
 _available = {f.name for f in fm.fontManager.ttflist}
@@ -468,7 +467,7 @@ def main():
     meta = {"seed": int(SEED), "mc_n": int(SPEC_MC_N),
             "error_model_enabled": bool(ERROR_MODEL_ENABLE),
             "sigma_depth_m": SIGMA_DEPTH, "script": "run_spec.py"}
-    jpath = write_json("run_spec", payload, meta=meta)
+    jpath = write_json("spec/run_spec", payload, meta=meta)
     csv_rows = []
     for sub, rs in (("positioning", pos_rows), ("geometry", geom_rows)):
         for r in rs:
@@ -482,13 +481,29 @@ def main():
                          "requirement": "最大運用水深 深度なし %.1fm / 深度あり %.1fm (%s)"
                          % (r["max_no"], r["max_dp"], _BIND_JA.get(r["bind_dp"])),
                          "boundary": r["max_dp"], "achievable": (r["max_dp"] > 0)})
-    cpath = write_csv("run_spec", csv_rows,
+    cpath = write_csv("spec/run_spec", csv_rows,
                       header=["subsystem", "parameter", "unit", "requirement",
                               "boundary", "achievable"])
-    print(f"\n図   : {png}")
-    print(f"図   : {png_op}")
-    print(f"JSON : {jpath}")
-    print(f"CSV  : {cpath}")
+    op_summary = {("最大運用水深 %s (なし→あり)" % r["label"]):
+                  ("%.1f → %.1f m (%s)" % (r["max_no"], r["max_dp"],
+                                           _BIND_JA.get(r["bind_dp"])))
+                  for r in op_results}
+    write_report(
+        "spec", "設計スペックシート (感度→設計要求の逆算)",
+        "「目標精度を満たすには各設計パラメータをどこに置くべきか」を逆算する MBD の成果物。\n"
+        "測位 (最大距離・最大角度ノイズ)、ジオメトリ (standoff/baseline/σ_cam/looks)、そして\n"
+        "運用可能な最大水深 (光学減衰§9 + 深度センサ§10: 濁りごとに深度センサあり/なしで目標を\n"
+        "満たす最大水深) を出す。掃引して目標線を横切る境界を線形補間で求める。",
+        condition_sections=["noise", "spec", "stereo", "optical", "depth",
+                            "error_model", "montecarlo"],
+        outputs=[("design_spec.png", "測位・幾何の設計要求グラフ"),
+                 ("operational_depth.png", "深度センサあり/なしの最大運用水深"),
+                 ("run_spec.json", "全要求と運用水深"),
+                 ("run_spec.csv", "要求一覧表")],
+        results={"測位目標": f"{target_pos:.0f} mm", "幾何目標": f"{target_geom:.0f} mm",
+                 "運用水深目標": f"{target_op:.0f} mm", **op_summary},
+        meta={"seed": SEED, "error_model": ERROR_MODEL_ENABLE}, math_spec="§7-§10")
+    print(f"\n出力 : {FIGDIR}")
     print("\n完了。設計要求 (距離/角度/standoff/baseline/σ_cam/looks) と "
           "深度センサあり/なしの最大運用水深を出力。")
 

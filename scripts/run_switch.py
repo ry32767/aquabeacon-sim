@@ -33,11 +33,10 @@ from src.sensors import (simulate_observation_sequence, simulate_imu_displacemen
 from src.estimator import (estimate_trajectory, estimate_trajectory_auto,
                            estimate_trajectory_acoustic_inertial)
 from src.evaluation import rmse_xyz
-from src.results_io import write_json, write_csv
+from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIGDIR = os.path.join(ROOT, "figures", "switch")
-os.makedirs(FIGDIR, exist_ok=True)
+FIGDIR = scenario_dir("switch")
 _JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
                   "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
 _available = {f.name for f in fm.fontManager.ttflist}
@@ -151,14 +150,30 @@ def main(seed=SEED):
         "rmse_total_mm": {k: rmse_xyz(traj, e)["total"] * 1000
                           for k, e in methods.items()},
     }
-    jpath = write_json("run_switch", payload,
+    jpath = write_json("switch/run_switch", payload,
                        meta={"seed": int(seed), "threshold": SWITCH_DROPOUT_THRESHOLD,
                              "hysteresis": SWITCH_HYSTERESIS, "script": "run_switch.py"})
-    cpath = write_csv("run_switch",
+    cpath = write_csv("switch/run_switch",
                       [{"method": k, "rmse_total_mm": round(rmse_xyz(traj, e)["total"] * 1000, 1)}
                        for k, e in methods.items()],
                       header=["method", "rmse_total_mm"])
-    print(f"\n図   : {png}\nJSON : {jpath}\nCSV  : {cpath}")
+    rmse_map = {k: rmse_xyz(traj, e)["total"] * 1000 for k, e in methods.items()}
+    write_report(
+        "switch", "光学↔フォールバック自動切替シナリオ",
+        "子機が一定深のサーベイ中に濁りのプルームを通過し、その間だけ光学ビーコンを見失う状況を\n"
+        "想定する。自動切替 (見失い率+ヒステリシスの状態機械, §12) が、光学が健全な区間は光学\n"
+        "(距離+方位+仰角)、見失い区間は距離+IMU+深度 (§11) を選び、ブラックアウトでも軌道を保つ。\n"
+        "素朴な光学維持 (見失いの誤検出を使う) / 常時フォールバック / 自動切替 を比較する。",
+        condition_sections=["noise", "switch", "depth", "trajectory"],
+        outputs=[("auto_switch.png", "モード色分け軌道/フレーム別誤差/検出と切替の時系列"),
+                 ("run_switch.json", "各手法のRMSEと切替情報"),
+                 ("run_switch.csv", "手法別 RMSE")],
+        results={"素朴な光学維持": f"{rmse_map['素朴な光学維持']:.0f} mm",
+                 "常時フォールバック": f"{rmse_map['常時フォールバック']:.0f} mm",
+                 "自動切替": f"{rmse_map['自動切替']:.0f} mm",
+                 "光学使用フレーム": f"{int(mask.sum())}/{n}"},
+        meta={"seed": seed, "threshold": SWITCH_DROPOUT_THRESHOLD}, math_spec="§12")
+    print(f"\n出力 : {FIGDIR}")
     print("\n完了。自動切替がブラックアウトを跨いで測位を維持することを確認。")
 
 

@@ -28,11 +28,10 @@ from src.config import (SIGMA, P_PARENT, SEED, OPTICAL_MODEL, SIGMA_DEPTH,
 from src.sensors import simulate_observation, simulate_depth, optical_angular_sigma
 from src.estimator import estimate_position
 from src.evaluation import rmse_xyz
-from src.results_io import write_json, write_csv
+from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIGDIR = os.path.join(ROOT, "figures", "depth")
-os.makedirs(FIGDIR, exist_ok=True)
+FIGDIR = scenario_dir("depth")
 _JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
                   "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
 _available = {f.name for f in fm.fontManager.ttflist}
@@ -185,15 +184,30 @@ def main(seed=SEED):
                      "total_no_depth_mm": tot_no, "total_with_depth_mm": tot_dp},
         "single_time_outlier_rmse_mm": c_errs,
     }
-    jpath = write_json("run_depth", payload,
+    jpath = write_json("depth/run_depth", payload,
                        meta={"seed": int(seed), "sigma_depth_m": SIGMA_DEPTH,
                              "mc_n": int(DEEP_MC_N), "script": "run_depth.py"})
-    cpath = write_csv("run_depth",
+    cpath = write_csv("depth/run_depth",
                       [{"depth_m": d, "z_no_depth_mm": round(a, 1),
                         "z_with_depth_mm": round(b, 1)}
                        for d, a, b in zip(depths, z_no, z_dp)],
                       header=["depth_m", "z_no_depth_mm", "z_with_depth_mm"])
-    print(f"\n図   : {png}\nJSON : {jpath}\nCSV  : {cpath}")
+    write_report(
+        "depth", "深度センサ融合デモ",
+        "子機の圧力センサ (深度=-z) を光学×音響に第4の観測として融合する効果を示す。\n"
+        "(a) 鉛直 z 軸の精度が劇的向上 (深度は z を直接・濁り非依存で拘束)、(b) 深い水深で角度が\n"
+        "悪化しても深度ありは z と総合RMSEを抑える、(c) 冗長性 (観測4>未知数3) で単時刻でも\n"
+        "ロバスト推定が外れ値を棄却できる。光学σは減衰モデル(§9)で校正した適応重みを仮定。",
+        condition_sections=["noise", "depth", "optical", "deepwater"],
+        outputs=[("depth_fusion.png", "軸別RMSE/vs水深/単時刻外れ値の3パネル"),
+                 ("run_depth.json", "全結果"),
+                 ("run_depth.csv", "水深別 z RMSE (深度あり/なし)")],
+        results={f"深さ{PANEL_A_DEPTH:.0f}m z RMSE (なし→あり)":
+                 f"{a_no['z']:.0f} → {a_dp['z']:.0f} mm",
+                 "単時刻外れ値 L2なし→huber深度あり":
+                 f"{c_errs['L2(深度なし)']:.0f} → {c_errs['huber(深度あり)']:.0f} mm"},
+        meta={"seed": seed, "sigma_depth_cm": SIGMA_DEPTH * 100}, math_spec="§10")
+    print(f"\n出力 : {FIGDIR}")
     print("\n完了。深度センサで z 精度が激増し、冗長性で単時刻ロバストが効くことを確認。")
 
 

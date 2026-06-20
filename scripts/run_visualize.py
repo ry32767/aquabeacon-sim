@@ -55,12 +55,13 @@ from src.geometry import (aabb_dimensions, robust_cube_side_estimate,
                           robust_volume, aabb_volume, stereo_triangulate)
 from src.evaluation import (monte_carlo_estimates, rmse_xyz, dimension_error_mm,
                             volume_error_rate_pct, pointcloud_rms_to_surface)
+from src.results_io import write_report
 
 # ----------------------------------------------------------------------------
 # 出力先・フォント・体裁
 # ----------------------------------------------------------------------------
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIGDIR = os.path.join(ROOT, "figures")
+FIGDIR = os.path.join(ROOT, "results", "visualize")     # results/ に統合 (シナリオ別フォルダ)
 os.makedirs(FIGDIR, exist_ok=True)
 
 # 日本語フォントを自動検出 (無ければ英語ラベルにフォールバックして豆腐□を防ぐ)
@@ -840,8 +841,20 @@ def main():
     scene_multilook_converge()
     scene_traj_converge()
     scene_stage2_sensitivity()
-    print("\n完了。figures/positioning/ と figures/geometry/ の各シーンフォルダに")
-    print("PNG / GIF / MP4 が分かれて出力されました。発表資料に使ってください。")
+    write_report(
+        "visualize", "発表用 可視化シーン集 (Stage1 + Stage2)",
+        "推定結果を人に見せるための図・アニメーション (全10シーン)。2系統 (測位=親機1カメラ /\n"
+        "ジオメトリ=子機ステレオ) で `positioning/` と `geometry/` にシーン別フォルダ分けして出力。\n"
+        "各シーンに PNG (+ アニメは GIF / MP4)。乱数は seed 固定で再現可能。仕様は docs/VISUALIZATION.md。",
+        condition_sections=["noise", "truth", "stereo", "trajectory",
+                            "demo_trajectory", "visualization"],
+        outputs=[("positioning/", "測位シーン (1_cloud3d, 2_sensitivity, 3_converge, "
+                  "4_trajectory, 5_traj_imu, 7_mapping_progress, 9_traj_converge)"),
+                 ("geometry/", "ジオメトリシーン (6_cube_mapping, 8_multilook_converge, "
+                  "10_stage2_sensitivity)")],
+        math_spec="§1-§6.2")
+    print("\n完了。results/visualize/positioning/ と results/visualize/geometry/ の各シーン")
+    print("フォルダに PNG / GIF / MP4 が分かれて出力されました。発表資料に使ってください。")
 
 
 if __name__ == "__main__":

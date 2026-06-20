@@ -30,11 +30,10 @@ from src.sensors import (simulate_observation_sequence, simulate_imu_displacemen
                          simulate_depth_sequence, optical_angular_sigma, optical_snr)
 from src.estimator import (estimate_trajectory, estimate_trajectory_acoustic_inertial)
 from src.evaluation import rmse_xyz
-from src.results_io import write_json, write_csv
+from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIGDIR = os.path.join(ROOT, "figures", "no_optical")
-os.makedirs(FIGDIR, exist_ok=True)
+FIGDIR = scenario_dir("no_optical")
 _JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
                   "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
 _available = {f.name for f in fm.fontManager.ttflist}
@@ -200,14 +199,29 @@ def main():
         "demo": {"depth_m": DEMO_DEPTH, "rmse_mm":
                  {k: rmse_demo[k] * 1000 for k in ("x", "y", "z", "total")}},
     }
-    jpath = write_json("run_no_optical", payload,
+    jpath = write_json("no_optical/run_no_optical", payload,
                        meta={"seed": int(SEED), "n_seeds": N_SEEDS,
                              "sigma_depth_m": SIGMA_DEPTH, "script": "run_no_optical.py"})
-    cpath = write_csv("run_no_optical",
+    cpath = write_csv("no_optical/run_no_optical",
                       [{"depth_m": d, "no_optical_total_mm": round(no_opt[d]["total"], 1),
                         "no_optical_z_mm": round(no_opt[d]["z"], 1)} for d in DEPTHS],
                       header=["depth_m", "no_optical_total_mm", "no_optical_z_mm"])
-    print(f"\n図   : {png}\nJSON : {jpath}\nCSV  : {cpath}")
+    write_report(
+        "no_optical", "光学なしフォールバック (距離+IMU+深度)",
+        "光学追跡が使えない/失われた場合 (濁り水でビーコン見失い=検出律速) を想定し、音響距離+IMU+\n"
+        "深度センサのみで子機軌道を推定する。単時刻は方位が不可観測 (距離+深度の2拘束) だが、IMUで\n"
+        "時刻間を繋ぐと軌道が可観測になる。光を使わないので水の濁り・深さによる光学劣化に不感で、\n"
+        "光学の検出限界より深い/濁った水でも同じ精度で測位を継続できる (光学と相補の安全網)。",
+        condition_sections=["noise", "depth", "optical", "deepwater"],
+        outputs=[("no_optical.png", "3D軌道/RMSE vs水深(検出限界つき)/軸別RMSE"),
+                 ("run_no_optical.json", "全結果"),
+                 ("run_no_optical.csv", "水深別 RMSE (光学なし)")],
+        results={"検出限界 (clear/coastal/turbid)":
+                 f"{det_limits[0.05]:.0f}/{det_limits[0.3]:.0f}/{det_limits[1.0]:.0f} m",
+                 f"軌道デモ 深さ{DEMO_DEPTH:.0f}m RMSE":
+                 f"{rmse_demo['total']*1000:.0f} mm (z {rmse_demo['z']*1000:.0f} mm)"},
+        meta={"seed": SEED, "n_seeds": N_SEEDS}, math_spec="§11")
+    print(f"\n出力 : {FIGDIR}")
     print("\n完了。光学なし(距離+IMU+深度)が濁り・深さに不感で測位を継続できることを確認。")
 
 

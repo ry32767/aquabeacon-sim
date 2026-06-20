@@ -25,11 +25,10 @@ from src.truth import double_lawnmower_trajectory
 from src.sensors import simulate_observation_sequence, simulate_imu_displacements
 from src.estimator import estimate_trajectory
 from src.evaluation import rmse_xyz
-from src.results_io import write_json, write_csv
+from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIGDIR = os.path.join(ROOT, "figures", "robust")
-os.makedirs(FIGDIR, exist_ok=True)
+FIGDIR = scenario_dir("robust")
 _JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
                   "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
 _available = {f.name for f in fm.fontManager.ttflist}
@@ -122,12 +121,26 @@ def main(seed=SEED):
     payload = {"rmse_total_mm": results, "best_robust": best,
                "outlier_times": outlier_times,
                "improvement_pct": (1 - results[best] / base) * 100}
-    jpath = write_json("run_robust", payload,
+    jpath = write_json("robust/run_robust", payload,
                        meta={"seed": int(seed), "script": "run_robust.py"})
-    cpath = write_csv("run_robust",
+    cpath = write_csv("robust/run_robust",
                       [{"loss": l, "rmse_total_mm": results[l]} for l in LOSSES],
                       header=["loss", "rmse_total_mm"])
-    print(f"\n図   : {png}\nJSON : {jpath}\nCSV  : {cpath}")
+    rpath = write_report(
+        "robust", "ロバスト推定デモ (外れ値耐性)",
+        "外れ値 (ライト見失い・音響マルチパス) を数時刻に注入したダブル芝刈り軌道を、純L2 と\n"
+        "各ロバスト損失 (huber/soft_l1/cauchy) で推定し RMSE を比較する。IMU拘束つき軌道推定で\n"
+        "ロバスト損失が外れ値時刻の残差を減衰し、RMSE を大きく下げることを示す。",
+        condition_sections=["noise", "trajectory", "estimator", "montecarlo"],
+        outputs=[("robust_vs_linear.png", "純L2 vs ロバストの軌道比較"),
+                 ("run_robust.json", "全損失の RMSE"),
+                 ("run_robust.csv", "損失別 RMSE 表")],
+        results={"純L2 RMSE": f"{base:.0f} mm",
+                 f"最良ロバスト ({best})": f"{results[best]:.0f} mm",
+                 "改善率": f"{(1-results[best]/base)*100:.0f} %"},
+        meta={"seed": seed}, math_spec="§4.4")
+    print(f"\n出力 : {FIGDIR}\n  {os.path.basename(jpath)} / {os.path.basename(cpath)} / "
+          f"{os.path.basename(rpath)}")
     print("\n完了。外れ値下で robust 損失が L2 より高精度なことを確認。")
 
 

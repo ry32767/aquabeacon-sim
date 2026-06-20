@@ -36,7 +36,7 @@ from src.geometry import (aabb_dimensions, aabb_volume, convex_hull_volume,
                           robust_cube_side_estimate, stereo_triangulate)
 from src.evaluation import (rmse_xyz, dimension_error_mm, volume_error_rate_pct,
                             pointcloud_rms_to_surface)
-from src.results_io import write_json
+from src.results_io import write_json, write_report
 
 
 def _stereo_cloud(true_cloud, center, seed, looks,
@@ -138,11 +138,25 @@ def main(seed=SEED, export=True):
     _, _, _, traj_metrics = part_a_trajectory(seed=seed)
     _, _, geom_metrics = part_b_geometry(seed=seed)
     if export:
-        path = write_json(
-            "run_mapping",
+        write_json(
+            "mapping/run_mapping",
             {"trajectory": traj_metrics, "geometry": geom_metrics},
             meta={"seed": int(seed), "script": "run_mapping.py"})
-        print(f"\n結果を保存: {path}")
+        write_report(
+            "mapping", "Stage2 マッピング (軌道推定 + キューブ計測)",
+            "Stage 2 を1本通す。(A) ダブル芝刈り軌道を観測のみ / 観測+IMU で推定し RMSE を比較\n"
+            "(IMU拘束で精度向上)。(B) 既知キューブ表面を子機の2カメラ(ステレオ)で観測し三角測量で\n"
+            "推定点群を作り、寸法 L_hat / 体積 V_hat と誤差を出す。位置推定(親機カメラ+音響)とは別系統。",
+            condition_sections=["noise", "trajectory", "cube", "stereo", "mapping"],
+            outputs=[("run_mapping.json", "軌道RMSEとキューブ計測の数値")],
+            results={"軌道RMSE IMUなし→あり":
+                     f"{traj_metrics['rmse_total_no_imu_mm']:.0f} → "
+                     f"{traj_metrics['rmse_total_with_imu_mm']:.0f} mm",
+                     "キューブ寸法誤差 (ロバスト)":
+                     f"{geom_metrics['robust_dim_error_mm']:+.0f} mm",
+                     "点群RMS": f"{geom_metrics['cloud_rms_mm']:.0f} mm"},
+            meta={"seed": seed}, math_spec="§5, §6.2")
+        print(f"\n結果を保存: results/mapping/")
     print("\n完了。Stage 2: 複数時刻推定 + ジオメトリ評価が一通り動作。")
 
 

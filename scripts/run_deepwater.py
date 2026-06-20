@@ -33,11 +33,10 @@ from src.sensors import (optical_snr, optical_angular_sigma, optical_dropout_pro
                          simulate_imu_displacements)
 from src.estimator import estimate_position, estimate_trajectory
 from src.evaluation import rmse_xyz
-from src.results_io import write_json, write_csv
+from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FIGDIR = os.path.join(ROOT, "figures", "deepwater")
-os.makedirs(FIGDIR, exist_ok=True)
+FIGDIR = scenario_dir("deepwater")
 _JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
                   "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
 _available = {f.name for f in fm.fontManager.ttflist}
@@ -238,7 +237,7 @@ def main(seed=SEED):
             "expected_dropout_pct": demo["p_drop"] * 100,
             "rmse_linear_mm": demo["rmse_lin"], "rmse_robust_mm": demo["rmse_rob"]},
     }
-    jpath = write_json("run_deepwater", payload,
+    jpath = write_json("deepwater/run_deepwater", payload,
                        meta={"seed": int(seed), "mc_n": int(DEEP_MC_N),
                              "script": "run_deepwater.py"})
     csv_rows = []
@@ -246,9 +245,23 @@ def main(seed=SEED):
         for d, y in zip(curves[c]["rmse_depths"], curves[c]["rmse_mm"]):
             csv_rows.append({"clarity_c": c, "depth_m": d,
                              "rmse_mm": ("" if y is None else round(y, 1))})
-    cpath = write_csv("run_deepwater", csv_rows,
+    cpath = write_csv("deepwater/run_deepwater", csv_rows,
                       header=["clarity_c", "depth_m", "rmse_mm"])
-    print(f"\n図   : {png}\nJSON : {jpath}\nCSV  : {cpath}")
+    write_report(
+        "deepwater", "深い水深テスト (光学減衰・見失い)",
+        "親機の光学追跡を水中の減衰・拡散モデル込みで評価する。水の濁り c を clear/coastal/turbid と\n"
+        "振り、水深 5〜20m で測位精度 (RMSE) と見失い (ドロップアウト) を掃引する。深い/濁るほど\n"
+        "SNR が落ちて角度精度が悪化し見失いが増える。最後に深い濁り水の軌道を linear vs robust で比較する。",
+        condition_sections=["noise", "optical", "deepwater", "estimator"],
+        outputs=[("deepwater.png", "σ_ang/SNR/見失い/測位RMSE/linear vs robust軌道"),
+                 ("run_deepwater.json", "曲線データと軌道比較"),
+                 ("run_deepwater.csv", "濁り×水深の測位RMSE")],
+        results={"軌道デモ条件": f"深さ{demo['depth']:.0f}m, 濁りc={demo['clarity']:.1f}, "
+                 f"見失い~{demo['p_drop']*100:.0f}%",
+                 "linear RMSE": f"{demo['rmse_lin']:.0f} mm",
+                 "robust(huber) RMSE": f"{demo['rmse_rob']:.0f} mm"},
+        meta={"seed": seed, "mc_n": DEEP_MC_N}, math_spec="§9")
+    print(f"\n出力 : {FIGDIR}")
     print("\n完了。深い水深で光減衰が測位を悪化させ、ロバスト推定が見失いを救うことを確認。")
 
 

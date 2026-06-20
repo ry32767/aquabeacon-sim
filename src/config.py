@@ -44,6 +44,11 @@ def _get(section, key, default):
     return _CFG.get(section, {}).get(key, default)
 
 
+# 生の config 辞書とパスを公開 (results_io がシナリオ説明 .md に条件を埋め込むのに使う)
+CONFIG_RAW = _CFG
+CONFIG_TOML_PATH = _TOML_PATH
+
+
 # =====================================================================
 # 座標系・幾何 (MATH_SPEC §0)
 # =====================================================================
