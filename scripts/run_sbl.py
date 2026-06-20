@@ -110,10 +110,10 @@ def main():
         opt_d.append(_avg(lambda s, dd=d: _optical_rmse(dd, s)))
         fb_d.append(_avg(lambda s, dd=d: _fallback_rmse(dd, s)))
     print("\n--- RMSE total vs 水深 [mm] ---")
-    print("  水深[m]        " + "".join("%7d" % d for d in DEPTHS))
-    print("  SBL(4点+IMU+深) " + "".join("%7.0f" % v for v in sbl_d))
-    print("  光学(角度+IMU+深)" + "".join("%7.0f" % v for v in opt_d))
-    print("  単一距離+IMU+深 " + "".join("%7.0f" % v for v in fb_d))
+    print("  水深[m]                      " + "".join("%7d" % d for d in DEPTHS))
+    print("  SBL  音響4点距離+IMU+深       " + "".join("%7.0f" % v for v in sbl_d))
+    print("  光学 角度+音響1点距離+IMU+深  " + "".join("%7.0f" % v for v in opt_d))
+    print("  単独 音響1点距離+IMU+深       " + "".join("%7.0f" % v for v in fb_d))
 
     # (c) RMSE vs ベースライン B (固定深)
     sbl_b = [_avg(lambda s, B=B: _sbl_rmse(DEMO_DEPTH, _anchors(B), s)[0]["total"] * 1000)
@@ -143,9 +143,12 @@ def main():
     ax.legend(fontsize=8, loc="upper left"); ax.view_init(elev=30, azim=-65)
 
     axb = fig.add_subplot(1, 3, 2)
-    axb.plot(DEPTHS, sbl_d, "o-", color="tab:blue", label=Lbl("SBL (4点+IMU+深)", "SBL"))
-    axb.plot(DEPTHS, opt_d, "s--", color="tab:green", label=Lbl("光学 (角度+IMU+深)", "optical"))
-    axb.plot(DEPTHS, fb_d, "^:", color="tab:orange", label=Lbl("単一距離+IMU+深", "single range"))
+    axb.plot(DEPTHS, sbl_d, "o-", color="tab:blue",
+             label=Lbl("SBL (音響4点距離+IMU+深)", "SBL (4 ranges)"))
+    axb.plot(DEPTHS, opt_d, "s--", color="tab:green",
+             label=Lbl("光学 (角度+音響1点距離+IMU+深)", "optical (angle+range)"))
+    axb.plot(DEPTHS, fb_d, "^:", color="tab:orange",
+             label=Lbl("単独 (音響1点距離+IMU+深)", "single range"))
     axb.set_xlabel(Lbl("水深 [m]", "depth [m]")); axb.set_ylabel("RMSE total [mm]")
     axb.set_title(Lbl("(b) RMSE vs 水深", "(b) RMSE vs depth"))
     axb.grid(alpha=0.3); axb.legend(fontsize=8)
