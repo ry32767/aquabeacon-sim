@@ -1,0 +1,166 @@
+"""run_switch.py — 光学↔フォールバック自動切替シナリオ (MATH_SPEC §12)。
+
+子機が一定深のサーベイ中に**濁りのプルーム (濁った塊)** を通過し、その間だけ光学ビーコンを
+見失う状況を想定する。自動切替 (見失い率+ヒステリシス, §12) が:
+  - 光学が健全な区間 → 光学 (距離+方位+仰角) で高精度
+  - プルーム通過中 (見失い) → 距離+IMU+深度 (§11) に自動でフォールバック
+を選び、ブラックアウトでも軌道を保つ。
+
+比較:
+  - 素朴な光学維持 (見失いの誤検出をそのまま使う) → ブラックアウトで破綻
+  - 常時フォールバック → 安定だが光学を活かせない
+  - 自動切替 → 両方のいいとこ取り
+
+出力: figures/switch/auto_switch.png + results/run_switch.{json,csv}
+実行: python scripts/run_switch.py
+"""
+import os
+import sys
+
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.config import (SIGMA, SIGMA_IMU, SIGMA_DEPTH, P_PARENT, SEED,
+                        SWITCH_DROPOUT_THRESHOLD, SWITCH_HYSTERESIS)
+from src.truth import double_lawnmower_trajectory
+from src.sensors import (simulate_observation_sequence, simulate_imu_displacements,
+                         simulate_depth_sequence)
+from src.estimator import (estimate_trajectory, estimate_trajectory_auto,
+                           estimate_trajectory_acoustic_inertial)
+from src.evaluation import rmse_xyz
+from src.results_io import write_json, write_csv
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FIGDIR = os.path.join(ROOT, "figures", "switch")
+os.makedirs(FIGDIR, exist_ok=True)
+_JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
+                  "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
+_available = {f.name for f in fm.fontManager.ttflist}
+_JP = next((c for c in _JP_CANDIDATES if c in _available), None)
+USE_JP = _JP is not None
+if USE_JP:
+    plt.rcParams["font.family"] = _JP
+plt.rcParams["axes.unicode_minus"] = False
+
+
+def Lbl(ja, en):
+    return ja if USE_JP else en
+
+
+def build_scenario(seed=SEED):
+    traj = double_lawnmower_trajectory(area=(8.0, 5.0), depth=-9.0,
+                                       n_legs=3, pts_per_leg=9, origin=(3.0, 3.0))
+    n = len(traj)
+    z = simulate_observation_sequence(traj, SIGMA, seed=seed, p_parent=P_PARENT)
+    imu = simulate_imu_displacements(traj, SIGMA_IMU, seed=seed + 1)
+    dep = simulate_depth_sequence(traj, SIGMA_DEPTH, seed=seed + 2)
+    # 濁りプルーム通過: 中央の連続区間でビーコン見失い
+    det = np.ones(n, bool)
+    a, b = int(n * 0.38), int(n * 0.72)
+    det[a:b] = False
+    # 見失いフレームの角度は誤検出 (大外れ値)。距離・深度・IMU は生きている。
+    z_bad = z.copy()
+    rng = np.random.default_rng(seed + 9)
+    for k in range(n):
+        if not det[k]:
+            z_bad[k, 1] += rng.uniform(-0.5, 0.5)
+            z_bad[k, 2] += rng.uniform(-0.5, 0.5)
+    return traj, z, z_bad, imu, dep, det, (a, b)
+
+
+def main(seed=SEED):
+    print("=== 光学<->フォールバック自動切替シナリオ (MATH_SPEC §12) ===")
+    print(f"フォント: {_JP if USE_JP else '(英語ラベル)'} / "
+          f"切替: 見失い率>{SWITCH_DROPOUT_THRESHOLD:.2f} (ヒステリシス{SWITCH_HYSTERESIS:.2f})")
+    traj, z, z_bad, imu, dep, det, (a, b) = build_scenario(seed)
+    n = len(traj)
+    print(f"軌道点数 n={n} / プルーム通過 (見失い) フレーム = {a}..{b-1}")
+
+    naive = estimate_trajectory(z_bad, SIGMA, imu_deltas=imu, sigma_imu=SIGMA_IMU,
+                                p_parent=P_PARENT, loss="huber")
+    fb = estimate_trajectory_acoustic_inertial(z[:, 0], SIGMA[0], imu, SIGMA_IMU,
+                                               dep, SIGMA_DEPTH, p_parent=P_PARENT)
+    auto, mask = estimate_trajectory_auto(z_bad, SIGMA, det, imu, SIGMA_IMU, dep,
+                                          SIGMA_DEPTH, p_parent=P_PARENT,
+                                          threshold=SWITCH_DROPOUT_THRESHOLD,
+                                          hysteresis=SWITCH_HYSTERESIS)
+    methods = {"素朴な光学維持": naive, "常時フォールバック": fb, "自動切替": auto}
+    print("\n--- RMSE total [mm] ---")
+    for k, e in methods.items():
+        print(f"  {k:14s} {rmse_xyz(traj, e)['total']*1000:6.0f}")
+    print(f"  自動切替が光学を使ったフレーム = {int(mask.sum())}/{n}")
+
+    # ===== 図 =====
+    fig = plt.figure(figsize=(16, 5))
+    # (a) 3D: 真値 + 自動切替 (モードで色分け)
+    ax = fig.add_subplot(1, 3, 1, projection="3d")
+    ax.plot(traj[:, 0], traj[:, 1], traj[:, 2], "-", color="red", lw=1.6,
+            label=Lbl("真の軌道", "true"))
+    mo = mask
+    ax.scatter(auto[mo, 0], auto[mo, 1], auto[mo, 2], c="tab:green", s=24,
+               label=Lbl("光学モード", "optical"))
+    ax.scatter(auto[~mo, 0], auto[~mo, 1], auto[~mo, 2], c="gold", s=24,
+               label=Lbl("フォールバック", "fallback"))
+    ax.set_title(Lbl("(a) 自動切替の軌道 (色=モード)", "(a) auto trajectory"), fontsize=10)
+    ax.set_xlabel("X[m]"); ax.set_ylabel("Y[m]"); ax.set_zlabel("Z[m]")
+    ax.legend(fontsize=8, loc="upper left"); ax.view_init(elev=40, azim=-65)
+
+    # (b) フレーム別 位置誤差
+    axb = fig.add_subplot(1, 3, 2)
+    fr = np.arange(n)
+    for k, e, col in [("素朴な光学維持", naive, "gray"),
+                      ("常時フォールバック", fb, "tab:orange"),
+                      ("自動切替", auto, "tab:blue")]:
+        err = np.linalg.norm(e - traj, axis=1) * 1000
+        axb.plot(fr, err, "-", color=col, label=Lbl(k, k))
+    axb.axvspan(a, b - 1, color="gold", alpha=0.2,
+                label=Lbl("見失い区間", "blackout"))
+    axb.set_xlabel(Lbl("フレーム", "frame")); axb.set_ylabel(Lbl("位置誤差 [mm]", "err [mm]"))
+    axb.set_title(Lbl("(b) フレーム別 位置誤差", "(b) per-frame error"))
+    axb.grid(alpha=0.3); axb.legend(fontsize=8)
+
+    # (c) モードタイムライン
+    axc = fig.add_subplot(1, 3, 3)
+    axc.step(fr, det.astype(int), where="mid", color="k",
+             label=Lbl("検出 (1=見えた)", "detected"))
+    axc.step(fr, mask.astype(int) - 0.05, where="mid", color="tab:green", lw=2,
+             label=Lbl("光学使用 (自動切替)", "optical used"))
+    axc.axvspan(a, b - 1, color="gold", alpha=0.2)
+    axc.set_ylim(-0.3, 1.3); axc.set_yticks([0, 1])
+    axc.set_xlabel(Lbl("フレーム", "frame"))
+    axc.set_title(Lbl("(c) 検出と切替の時系列", "(c) detect & switch timeline"))
+    axc.grid(alpha=0.3); axc.legend(fontsize=8, loc="center right")
+
+    fig.suptitle(Lbl(
+        "光学↔フォールバック自動切替: プルーム通過の見失い中はフォールバック、健全区間は光学 "
+        "(両モードのいいとこ取り, §12)",
+        "Auto optical/fallback switching keeps positioning through a blackout"))
+    fig.tight_layout()
+    png = os.path.join(FIGDIR, "auto_switch.png")
+    fig.savefig(png, bbox_inches="tight")
+    plt.close(fig)
+
+    payload = {
+        "n_frames": n, "blackout_frames": [a, b - 1],
+        "optical_used_frames": int(mask.sum()),
+        "rmse_total_mm": {k: rmse_xyz(traj, e)["total"] * 1000
+                          for k, e in methods.items()},
+    }
+    jpath = write_json("run_switch", payload,
+                       meta={"seed": int(seed), "threshold": SWITCH_DROPOUT_THRESHOLD,
+                             "hysteresis": SWITCH_HYSTERESIS, "script": "run_switch.py"})
+    cpath = write_csv("run_switch",
+                      [{"method": k, "rmse_total_mm": round(rmse_xyz(traj, e)["total"] * 1000, 1)}
+                       for k, e in methods.items()],
+                      header=["method", "rmse_total_mm"])
+    print(f"\n図   : {png}\nJSON : {jpath}\nCSV  : {cpath}")
+    print("\n完了。自動切替がブラックアウトを跨いで測位を維持することを確認。")
+
+
+if __name__ == "__main__":
+    main()

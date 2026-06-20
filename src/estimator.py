@@ -124,8 +124,9 @@ def estimate_position(z_meas, sigma, p_parent=None,
 def estimate_trajectory(z_seq, sigma_obs, imu_deltas=None, sigma_imu=None,
                         p_parent=None, observe_from_parent=True, x0=None,
                         loss="linear", f_scale=1.345,
-                        z_depth_seq=None, sigma_depth=None, use_angles=True):
-    """複数時刻の観測 (+ IMU 拘束 + 深度) から子機軌道を一括推定する (MATH_SPEC §5, §4.4, §10, §11)。
+                        z_depth_seq=None, sigma_depth=None, use_angles=True,
+                        angle_mask=None):
+    """複数時刻の観測 (+ IMU 拘束 + 深度) から子機軌道を一括推定する (MATH_SPEC §5, §4.4, §10, §11, §12)。
 
     z_seq     : (n,3) 各時刻の観測 (d, theta, phi)
     sigma_obs : (sigma_dist, sigma_az, sigma_el) 観測ノイズ
@@ -139,6 +140,9 @@ def estimate_trajectory(z_seq, sigma_obs, imu_deltas=None, sigma_imu=None,
     use_angles: True で観測 (d,θ,φ) 全部を使う。False なら**距離 d のみ**使い方位/仰角を
                 捨てる (光学追跡なしのフォールバック §11)。False のときは方位が不可観測なので
                 IMU と深度の併用が前提。逆変換初期化が使えないため x0 を与えること。
+    angle_mask: (n,) bool。各時刻で方位/仰角を使うか個別指定 (自動切替 §12)。True の時刻は
+                (d,θ,φ)、False の時刻は距離 d のみ。None なら use_angles を全時刻に適用する。
+                光学が一部時刻だけ使える混在ケースに用いる (x0 を与えること)。
     戻り値    : 推定軌道 X_hat (n,3)
 
     外れ値対策 (MATH_SPEC §4.4): IMU 拘束が時刻間を繋ぎ冗長性を作るので、ある時刻の
@@ -175,11 +179,18 @@ def estimate_trajectory(z_seq, sigma_obs, imu_deltas=None, sigma_imu=None,
         z_depth_seq = np.asarray(z_depth_seq, dtype=float).reshape(n)
         sqrtW_depth = 1.0 / sigma_depth
 
-    # 初期値: 各時刻を逆変換で (use_angles=False では角度が無く逆変換不可 -> x0 必須)
+    # 各時刻で角度を使うかのマスク (angle_mask 優先, 無ければ use_angles を全時刻に)
+    if angle_mask is None:
+        angle_mask = np.full(n, bool(use_angles))
+    else:
+        angle_mask = np.asarray(angle_mask, dtype=bool).reshape(n)
+    all_angles = bool(angle_mask.all())
+
+    # 初期値: 各時刻を逆変換で (角度の無い時刻があると逆変換不可 -> x0 必須)
     if x0 is None:
-        if not use_angles:
-            raise ValueError("use_angles=False のときは x0 (初期軌道) を与えてください "
-                             "(方位が不可観測なため逆変換初期化が使えない, §11)")
+        if not all_angles:
+            raise ValueError("角度を使わない時刻があるときは x0 (初期軌道) を与えてください "
+                             "(方位が不可観測なため逆変換初期化が使えない, §11/§12)")
         x0 = np.empty((n, 3))
         for k in range(n):
             v0 = inverse_observation(*z_seq[k])
@@ -189,9 +200,9 @@ def estimate_trajectory(z_seq, sigma_obs, imu_deltas=None, sigma_imu=None,
     def stacked_residual(x_flat):
         X = x_flat.reshape(n, 3)
         parts = []
-        for k in range(n):       # 観測残差 (use_angles=False なら距離 d のみ, §11)
+        for k in range(n):       # 観測残差 (角度マスク False の時刻は距離 d のみ, §11/§12)
             r_obs = residual(X[k], z_seq[k], p_parent, observe_from_parent)
-            if use_angles:
+            if angle_mask[k]:
                 parts.append(sqrtW_obs * r_obs)
             else:
                 parts.append(np.array([sqrtW_obs[0] * r_obs[0]]))
@@ -277,3 +288,79 @@ def estimate_trajectory_acoustic_inertial(range_seq, sigma_dist, imu_deltas, sig
         if c < best_cost:
             best_cost, best = c, est
     return best
+
+
+def optical_health_mask(detected, threshold=0.2, hysteresis=0.05, window=5):
+    """光学リンクの健全性から、各時刻で方位/仰角を使うか (use-optical) を決める (MATH_SPEC §12)。
+
+    直近 window フレームの**見失い率** (1 - 検出率) を見て、しきい値を超えたら光学を信頼せず
+    フォールバックへ、下回ったら光学へ戻る状態機械 (ヒステリシスでチャタリング防止)。因果的
+    (過去のみ参照) なのでオンライン運用に使える。
+
+    detected  : (n,) bool。各時刻でビーコンを検出できたか。
+    threshold : 見失い率がこれを超えると光学→フォールバックに切替。
+    hysteresis: 戻る側のしきい値を threshold-hysteresis に下げる (チャタリング防止)。
+    window    : 見失い率を測る移動窓のフレーム数。
+    戻り値    : (n,) bool。True の時刻は光学 (角度) を使う。光学状態でも未検出フレームは False。
+    """
+    detected = np.asarray(detected, dtype=bool)
+    n = len(detected)
+    mask = np.zeros(n, dtype=bool)
+    optical_state = True
+    for k in range(n):
+        lo = max(0, k - window + 1)
+        dropout_rate = 1.0 - detected[lo:k + 1].mean()
+        if optical_state and dropout_rate > threshold:
+            optical_state = False
+        elif (not optical_state) and dropout_rate < threshold - hysteresis:
+            optical_state = True
+        mask[k] = optical_state and detected[k]
+    return mask
+
+
+def estimate_trajectory_auto(z_seq, sigma_obs, detected, imu_deltas, sigma_imu,
+                             depth_seq, sigma_depth, p_parent=None,
+                             observe_from_parent=True, threshold=0.2,
+                             hysteresis=0.05, window=5, n_azimuth_starts=12,
+                             loss="huber", f_scale=1.345):
+    """光学↔フォールバックを自動切替して軌道を推定する (MATH_SPEC §12)。
+
+    光学が健全な時刻は (距離+方位+仰角)、見失い多発の時刻は (距離+深度+IMU) のみを使う
+    1本のバッチ最小二乗。健全性は optical_health_mask が見失い率+ヒステリシスで判定する。
+
+    初期値は**フォールバック解** (距離+IMU+深度の多スタート解, §11) を使う。これは方位込みで
+    大域的に可観測なので、利用可能な光学フレームはそこから精緻化するだけでよい。
+
+    z_seq    : (n,3) 観測 (d, theta, phi)。未検出時刻の角度は使われない (マスク)。
+    detected : (n,) bool。各時刻でビーコンを検出できたか (切替判定に使う)。
+    戻り値   : (X_hat (n,3), angle_mask (n,) bool)。mask は実際に角度を使った時刻。
+    """
+    if p_parent is None:
+        p_parent = np.zeros(3)
+    z_seq = np.asarray(z_seq, dtype=float)
+    n = len(z_seq)
+    mask = optical_health_mask(detected, threshold=threshold,
+                               hysteresis=hysteresis, window=window)
+
+    if mask.all():                     # 全時刻で光学健全 -> 逆変換初期化で十分 (多スタート不要)
+        est = estimate_trajectory(
+            z_seq, sigma_obs, imu_deltas=imu_deltas, sigma_imu=sigma_imu,
+            p_parent=p_parent, observe_from_parent=observe_from_parent,
+            loss=loss, f_scale=f_scale, z_depth_seq=depth_seq, sigma_depth=sigma_depth)
+        return est, mask
+
+    # 一部/全部の時刻で光学が使えない -> フォールバック解を大域初期値に (方位を解決, §11)
+    x0 = estimate_trajectory_acoustic_inertial(
+        z_seq[:, 0], sigma_obs[0], imu_deltas, sigma_imu, depth_seq, sigma_depth,
+        p_parent=p_parent, observe_from_parent=observe_from_parent,
+        n_azimuth_starts=n_azimuth_starts, loss=loss, f_scale=f_scale)
+
+    if not mask.any():                 # 光学が全く使えない -> 純フォールバック
+        return x0, mask
+
+    est = estimate_trajectory(
+        z_seq, sigma_obs, imu_deltas=imu_deltas, sigma_imu=sigma_imu,
+        p_parent=p_parent, observe_from_parent=observe_from_parent, x0=x0,
+        loss=loss, f_scale=f_scale, z_depth_seq=depth_seq, sigma_depth=sigma_depth,
+        angle_mask=mask)
+    return est, mask

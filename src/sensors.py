@@ -161,6 +161,28 @@ def optical_dropout_prob(d, model):
     return float(model["dropout_max"] / (1.0 + np.exp(x)))
 
 
+def simulate_optical_detection(trajectory, optical_model, seed, p_parent=None,
+                               observe_from_parent=True):
+    """各時刻でビーコンを検出できたかの bool 列 (n,) を返す (MATH_SPEC §9, §12)。
+
+    検出失敗 (見失い) は光学リンクのドロップアウト確率 p_drop(d) (§9) に従う。自動切替
+    (§12) の判定入力に使う。深い/濁った水ほど未検出が増える。seed で再現可能。
+
+    trajectory   : (n,3) 真の子機軌道
+    optical_model: 光学リンク減衰モデル (config.OPTICAL_MODEL と同形)
+    戻り値       : (n,) bool。True=検出, False=見失い。
+    """
+    if p_parent is None:
+        p_parent = np.zeros(3)
+    trajectory = np.asarray(trajectory, dtype=float)
+    rng = np.random.default_rng(seed)
+    out = np.empty(len(trajectory), dtype=bool)
+    for k, p in enumerate(trajectory):
+        d = np.linalg.norm(relative_vector(p, p_parent, observe_from_parent))
+        out[k] = rng.random() >= optical_dropout_prob(d, optical_model)
+    return out
+
+
 def simulate_observation_realistic(p_child, sigma, seed, p_parent=None,
                                    observe_from_parent=True, *,
                                    bias=(0.0, 0.0, 0.0),
