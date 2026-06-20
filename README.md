@@ -50,8 +50,17 @@ python scripts/run_robust.py        # ロバスト推定デモ: 外れ値下で 
 python scripts/run_deepwater.py     # 深い水深(10-20m)テスト: 光減衰→精度劣化・見失い
 python scripts/run_depth.py         # 深度センサ融合デモ: z軸精度↑・単時刻ロバスト
 python scripts/run_no_optical.py    # 光学なしフォールバック: 距離+IMU+深度のみで測位
+python scripts/run_opmap.py         # 2次元運用スペック: 濁り×水深の運用可能領域マップ
 python scripts/run_visualize.py     # 発表用の図・アニメ生成 (figures/ にシナリオ別フォルダで出力)
 ```
+
+### 2次元運用スペック (`run_opmap.py`)
+
+水深 × 濁り c の格子で、各条件をどのモードで運用できるかを3色で塗り分ける
+(`figures/opmap/operational_map.png`): **緑=光学** (見失い率 ≤ しきい値 かつ目標精度)、
+**金=フォールバック** (光学不可だが距離+IMU+深度 §11 で目標達成 → 自動切替で継続)、
+**赤=運用不可**。光学領域は濁り・深さで縮み、フォールバックは光を使わず濁り非依存で広く覆う。
+破線は切替境界 (見失い率 = `config.toml [switch] dropout_threshold`)。この地図が自動切替の判断面。
 
 `run_mapping.py` / `run_spec.py` は数値結果を **`results/`** に JSON / CSV でも保存する
 (後から比較・解析するため。`results/` は `.gitignore` 済み)。

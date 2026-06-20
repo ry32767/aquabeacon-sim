@@ -48,6 +48,11 @@ sound_speed_assumed = 1500.0          # 推定側が仮定する音速 [m/s]
 acoustic_latency_s = 0.0              # 音響が光学より遅れる時間 [s]
                                       #   この間に子機が動くと距離と角度が別時刻を指す
 
+[switch]                              # 光学↔フォールバック 自動切替 (MATH_SPEC §12)
+dropout_threshold = 0.2               # 見失い確率がこれを超えたら光学を信頼しない→切替
+snr_margin        = 1.0               # 検出しきい値 snr_min に対する切替余裕 (倍率, 参考)
+hysteresis        = 0.05              # 切替のヒステリシス幅 (チャタリング防止)
+
 [depth]                               # 深度センサ(圧力) による鉛直拘束 (MATH_SPEC §10)
 enable   = false                      # true で測位/軌道推定に深度を融合 (デモは個別制御)
 sigma_m  = 0.05                       # 深度ノイズ [m] (圧力センサ精度, 数cm級)
