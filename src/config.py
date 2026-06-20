@@ -193,6 +193,7 @@ SENS_STEREO_BASELINES = list(_get("sensitivity", "stereo_baselines", [0.05, 0.1,
 # 設計スペックシート (run_spec.py): 目標精度と探索グリッド
 # =====================================================================
 SPEC_POS_RMSE_TARGET_MM = float(_get("spec", "pos_rmse_target_mm", 100.0))
+SPEC_OPDEPTH_TARGET_MM = float(_get("spec", "op_depth_target_mm", 300.0))
 SPEC_POS_BEARING = np.asarray(_get("spec", "pos_bearing", [0.6, 0.3, -0.75]), dtype=float)
 SPEC_POS_RANGE_GRID = list(_get("spec", "pos_range_grid", [5, 8, 10, 12.5, 15, 18, 22]))
 SPEC_POS_NOMINAL_RANGE = float(_get("spec", "pos_nominal_range", 12.5))

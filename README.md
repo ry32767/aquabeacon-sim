@@ -63,6 +63,13 @@ python scripts/run_visualize.py     # 発表用の図・アニメ生成 (figures
 σ_cam ≤ 0.08° / フレーム ≥ 30」。目標値と探索グリッドは `config.toml [spec]` で編集。
 出力は表 (コンソール) + `figures/spec/design_spec.png` + `results/run_spec.{json,csv}`。
 
+さらに **運用可能な最大水深** (光学減衰 §9 + 深度センサ §10 の統合) を濁りごとに出す。
+深度センサありで「ミッション精度 (既定 300 mm) を満たす最大水深」がどこまで伸びるかを
+深度センサなしと比較する。例 (既定設定): clear water で **16.5 m → 19.5 m** に延伸、
+turbid では延伸せず (光ビーコンの**検出限界**が先に縛るため深度センサでは救えない)。
+深い水では精度律速 → 深度センサで延伸 → 最後は検出律速、という構造が読める。
+ミッション精度は `config.toml [spec] op_depth_target_mm`。図は `figures/spec/operational_depth.png`。
+
 ### 深度センサ融合 (`config.toml [depth]`)
 
 子機の圧力センサで**絶対深度 (=-z) を直接測り**、光学×音響に第4の観測として融合する
