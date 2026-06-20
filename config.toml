@@ -48,6 +48,11 @@ sound_speed_assumed = 1500.0          # 推定側が仮定する音速 [m/s]
 acoustic_latency_s = 0.0              # 音響が光学より遅れる時間 [s]
                                       #   この間に子機が動くと距離と角度が別時刻を指す
 
+[depth]                               # 深度センサ(圧力) による鉛直拘束 (MATH_SPEC §10)
+enable   = false                      # true で測位/軌道推定に深度を融合 (デモは個別制御)
+sigma_m  = 0.05                       # 深度ノイズ [m] (圧力センサ精度, 数cm級)
+bias_m   = 0.0                        # 深度バイアス [m] (海面気圧・潮位ドリフト等)
+
 [estimator]                           # ロバスト推定 (MATH_SPEC §4.4)
 loss    = "linear"                    # "linear"(純L2,既定) / "huber" / "cauchy" / "soft_l1" / "arctan"
 f_scale = 1.345                       # ロバスト損失の内れ値しきい値 [σ単位] (Huber標準=1.345)

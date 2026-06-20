@@ -319,6 +319,34 @@ def simulate_stereo_observation(point, cam_L, cam_R, sigma_cam, seed):
     return np.array([bL[0], bL[1], bR[0], bR[1]])
 
 
+def simulate_depth(p_child, sigma_depth, seed, bias=0.0):
+    """深度センサ(圧力)の観測 depth = -z_child + bias + N(0, sigma_depth) を返す (MATH_SPEC §10)。
+
+    水面 (親機, z=0) を基準とした絶対深度 [m, 下が正]。座標は Z=上なので depth = -z。
+    距離・濁りに依存せず鉛直を直接測れるのが特徴 (光学が苦手な深い/濁った水で有効)。
+
+    p_child     : 真の子機位置 [m] (3,)
+    sigma_depth : 深度ノイズ標準偏差 [m] (圧力センサ精度)
+    bias        : 深度の系統バイアス [m] (海面気圧・潮位ドリフト等)。既定0。
+    seed        : 乱数シード (再現性)
+    """
+    rng = np.random.default_rng(seed)
+    z = np.asarray(p_child, dtype=float)[2]
+    return -z + bias + rng.normal(0.0, sigma_depth)
+
+
+def simulate_depth_sequence(trajectory, sigma_depth, seed, bias=0.0):
+    """軌道 (n,3) の各時刻に深度観測を生成して (n,) で返す (MATH_SPEC §10)。
+
+    各時刻 k に seed+k を使い、独立かつ再現可能なノイズを与える。
+    """
+    trajectory = np.asarray(trajectory, dtype=float)
+    out = np.empty(len(trajectory))
+    for k, p in enumerate(trajectory):
+        out[k] = simulate_depth(p, sigma_depth, seed=seed + k, bias=bias)
+    return out
+
+
 def simulate_imu_displacements(trajectory, sigma_imu, seed):
     """IMU pre-integration による時刻間変位 delta_p の擬似観測を返す (n-1, 3) [m]  (MATH_SPEC §5)。
 

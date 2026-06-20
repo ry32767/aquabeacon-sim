@@ -64,6 +64,11 @@ SIGMA = (SIGMA_DIST, SIGMA_AZ, SIGMA_EL)
 SIGMA_IMU = float(_get("noise", "sigma_imu", 0.02))
 SIGMA_IMU_VEC = (SIGMA_IMU, SIGMA_IMU, SIGMA_IMU)
 
+# 深度センサ (圧力) による鉛直拘束 (MATH_SPEC §10)。
+DEPTH_ENABLE = bool(_get("depth", "enable", False))
+SIGMA_DEPTH = float(_get("depth", "sigma_m", 0.05))     # 深度ノイズ [m]
+DEPTH_BIAS = float(_get("depth", "bias_m", 0.0))        # 深度バイアス [m]
+
 # =====================================================================
 # 更新周期 (参考)
 # =====================================================================
