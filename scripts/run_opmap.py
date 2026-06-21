@@ -17,10 +17,7 @@ import os
 import sys
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+from _plotstyle import plt, USE_JP, JP_FONT, Lbl
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -38,14 +35,6 @@ from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIGDIR = scenario_dir("opmap")
-_JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
-                  "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
-_available = {f.name for f in fm.fontManager.ttflist}
-_JP = next((c for c in _JP_CANDIDATES if c in _available), None)
-USE_JP = _JP is not None
-if USE_JP:
-    plt.rcParams["font.family"] = _JP
-plt.rcParams["axes.unicode_minus"] = False
 
 TARGET = SPEC_OPDEPTH_TARGET_MM         # ミッション精度 [mm]
 P_SWITCH = SWITCH_DROPOUT_THRESHOLD     # 見失い確率の切替しきい値
@@ -55,10 +44,6 @@ N_SEEDS = 3
 AZ_STARTS = 8                           # フォールバックの方位スタート数 (速度優先)
 
 OPTICAL, FALLBACK, NONE = 0, 1, 2
-
-
-def Lbl(ja, en):
-    return ja if USE_JP else en
 
 
 def _traj(depth):
@@ -131,7 +116,7 @@ def build_map():
 
 def main():
     print("=== 2次元運用スペック: 濁り×水深の運用可能領域マップ (§9-§12) ===")
-    print(f"フォント: {_JP if USE_JP else '(英語ラベル)'} / 目標 {TARGET:.0f}mm "
+    print(f"フォント: {JP_FONT if USE_JP else '(英語ラベル)'} / 目標 {TARGET:.0f}mm "
           f"/ 切替しきい値 見失い率 {P_SWITCH:.2f} / 平均試行 {N_SEEDS}")
 
     region, pdrop, fb = build_map()

@@ -16,10 +16,7 @@ import os
 import sys
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+from _plotstyle import plt, USE_JP, JP_FONT, Lbl
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,20 +34,8 @@ from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIGDIR = scenario_dir("deepwater")
-_JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
-                  "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
-_available = {f.name for f in fm.fontManager.ttflist}
-_JP = next((c for c in _JP_CANDIDATES if c in _available), None)
-USE_JP = _JP is not None
-if USE_JP:
-    plt.rcParams["font.family"] = _JP
-plt.rcParams["axes.unicode_minus"] = False
 
 CLARITY_LABEL = {0.05: "clear", 0.3: "coastal", 0.5: "coastal+", 1.0: "turbid"}
-
-
-def Lbl(ja, en):
-    return ja if USE_JP else en
 
 
 def _model(c, dropout=True):
@@ -201,7 +186,7 @@ def _plot(curves, demo):
 
 def main(seed=SEED):
     print("=== 深い水深テストシナリオ (MATH_SPEC §9) ===")
-    print(f"フォント: {_JP if USE_JP else '(英語ラベル)'} / "
+    print(f"フォント: {JP_FONT if USE_JP else '(英語ラベル)'} / "
           f"水平オフセット={DEEP_HORIZ_OFFSET.tolist()} m / MC試行={DEEP_MC_N}")
 
     curves = sweep_curves()

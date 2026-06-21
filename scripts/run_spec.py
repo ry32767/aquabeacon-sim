@@ -26,10 +26,7 @@ import os
 import sys
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+from _plotstyle import plt, USE_JP, JP_FONT, Lbl
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -58,18 +55,6 @@ CLARITY_LABEL = {0.05: "clear", 0.3: "coastal", 0.5: "coastal+", 1.0: "turbid"}
 # --- 出力先・日本語フォント ---------------------------------------------------
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIGDIR = scenario_dir("spec")
-_JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
-                  "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
-_available = {f.name for f in fm.fontManager.ttflist}
-_JP = next((c for c in _JP_CANDIDATES if c in _available), None)
-USE_JP = _JP is not None
-if USE_JP:
-    plt.rcParams["font.family"] = _JP
-plt.rcParams["axes.unicode_minus"] = False
-
-
-def Lbl(ja, en):
-    return ja if USE_JP else en
 
 
 # ----------------------------------------------------------------------------
@@ -435,7 +420,7 @@ def _plot_operational_depth(target, results):
 
 def main():
     print("=== 設計スペックシート (run_spec.py) ===")
-    print(f"フォント: {_JP if USE_JP else '(英語ラベル)'} / "
+    print(f"フォント: {JP_FONT if USE_JP else '(英語ラベル)'} / "
           f"測位評価: {'現実誤差込み' if ERROR_MODEL_ENABLE else '理想ノイズ'}")
 
     target_pos, pos_rows = sweep_positioning()

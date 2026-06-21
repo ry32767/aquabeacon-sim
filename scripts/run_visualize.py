@@ -29,10 +29,7 @@ import os
 import sys
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")                 # 画面なしでファイル保存するため
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+from _plotstyle import plt, USE_JP, JP_FONT, Lbl as L
 from matplotlib.animation import FuncAnimation, PillowWriter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -64,21 +61,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIGDIR = os.path.join(ROOT, "results", "visualize")     # results/ に統合 (シナリオ別フォルダ)
 os.makedirs(FIGDIR, exist_ok=True)
 
-# 日本語フォントを自動検出 (無ければ英語ラベルにフォールバックして豆腐□を防ぐ)
-_JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
-                  "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
-_available = {f.name for f in fm.fontManager.ttflist}
-_JP = next((c for c in _JP_CANDIDATES if c in _available), None)
-USE_JP = _JP is not None
-if USE_JP:
-    plt.rcParams["font.family"] = _JP
-plt.rcParams["axes.unicode_minus"] = False    # マイナス記号の豆腐を防ぐ
-plt.rcParams["figure.dpi"] = 110
-
-
-def L(ja, en):
-    """日本語フォントがあれば ja、無ければ en を返す (ラベル用)。"""
-    return ja if USE_JP else en
+plt.rcParams["figure.dpi"] = 110               # 既定 DPI (USE_JP/L は _plotstyle 由来)
 
 
 def scene_dir(*parts):
@@ -826,7 +809,7 @@ def scene_stage2_sensitivity(seed=0, n_per_edge=5):
 
 
 def main():
-    print(f"フォント: {_JP if USE_JP else '(日本語フォント無し -> 英語ラベル)'}")
+    print(f"フォント: {JP_FONT if USE_JP else '(日本語フォント無し -> 英語ラベル)'}")
     print(f"出力先  : {FIGDIR}\n")
     # Stage 1
     scene_cloud3d()

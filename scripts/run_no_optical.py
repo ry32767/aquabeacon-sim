@@ -16,10 +16,7 @@ import os
 import sys
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+from _plotstyle import plt, USE_JP, JP_FONT, Lbl
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -34,23 +31,11 @@ from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIGDIR = scenario_dir("no_optical")
-_JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
-                  "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
-_available = {f.name for f in fm.fontManager.ttflist}
-_JP = next((c for c in _JP_CANDIDATES if c in _available), None)
-USE_JP = _JP is not None
-if USE_JP:
-    plt.rcParams["font.family"] = _JP
-plt.rcParams["axes.unicode_minus"] = False
 
 CLARITY_LABEL = {0.05: "clear", 0.3: "coastal", 1.0: "turbid"}
 DEPTHS = [5, 8, 11, 14, 17, 20]      # 水深スキャン [m]
 N_SEEDS = 5                          # 各条件の平均試行数
 DEMO_DEPTH = 17.0                    # 3D軌道パネルの水深 (多くの濁りで光学は既に不可)
-
-
-def Lbl(ja, en):
-    return ja if USE_JP else en
 
 
 def _traj_at_depth(depth):
@@ -105,7 +90,7 @@ def _detection_limit(clarity):
 
 def main():
     print("=== 光学なしフォールバック (距離+IMU+深度) シナリオ (MATH_SPEC §11) ===")
-    print(f"フォント: {_JP if USE_JP else '(英語ラベル)'} / σ_depth={SIGMA_DEPTH*100:.0f}cm "
+    print(f"フォント: {JP_FONT if USE_JP else '(英語ラベル)'} / σ_depth={SIGMA_DEPTH*100:.0f}cm "
           f"/ 平均試行={N_SEEDS}")
 
     # --- 水深スキャン: 光学なし (濁り非依存) ---

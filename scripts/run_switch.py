@@ -18,10 +18,7 @@ import os
 import sys
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+from _plotstyle import plt, USE_JP, JP_FONT, Lbl
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,18 +34,6 @@ from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIGDIR = scenario_dir("switch")
-_JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
-                  "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
-_available = {f.name for f in fm.fontManager.ttflist}
-_JP = next((c for c in _JP_CANDIDATES if c in _available), None)
-USE_JP = _JP is not None
-if USE_JP:
-    plt.rcParams["font.family"] = _JP
-plt.rcParams["axes.unicode_minus"] = False
-
-
-def Lbl(ja, en):
-    return ja if USE_JP else en
 
 
 def build_scenario(seed=SEED):
@@ -74,7 +59,7 @@ def build_scenario(seed=SEED):
 
 def main(seed=SEED):
     print("=== 光学<->フォールバック自動切替シナリオ (MATH_SPEC §12) ===")
-    print(f"フォント: {_JP if USE_JP else '(英語ラベル)'} / "
+    print(f"フォント: {JP_FONT if USE_JP else '(英語ラベル)'} / "
           f"切替: 見失い率>{SWITCH_DROPOUT_THRESHOLD:.2f} (ヒステリシス{SWITCH_HYSTERESIS:.2f})")
     traj, z, z_bad, imu, dep, det, (a, b) = build_scenario(seed)
     n = len(traj)

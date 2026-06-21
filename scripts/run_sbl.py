@@ -17,10 +17,7 @@ import os
 import sys
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+from _plotstyle import plt, USE_JP, JP_FONT, Lbl
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -35,23 +32,11 @@ from src.evaluation import rmse_xyz
 from src.results_io import write_json, write_csv, scenario_dir, write_report
 
 FIGDIR = scenario_dir("sbl")
-_JP_CANDIDATES = ["Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP",
-                  "Hiragino Sans", "TakaoPGothic", "IPAexGothic"]
-_available = {f.name for f in fm.fontManager.ttflist}
-_JP = next((c for c in _JP_CANDIDATES if c in _available), None)
-USE_JP = _JP is not None
-if USE_JP:
-    plt.rcParams["font.family"] = _JP
-plt.rcParams["axes.unicode_minus"] = False
 
 DEPTHS = [5, 8, 11, 14, 17, 20]
 BASELINES = [1.0, 2.0, 4.0, 6.0, 8.0]
 N_SEEDS = 5
 DEMO_DEPTH = 10.0           # 3D デモ (a) と ベースライン掃引 (c) の固定水深
-
-
-def Lbl(ja, en):
-    return ja if USE_JP else en
 
 
 def _traj(depth):
@@ -100,7 +85,7 @@ def _avg(fn):
 
 def main():
     print("=== SBL 音響測位 比較シナリオ (MATH_SPEC §13) ===")
-    print(f"フォント: {_JP if USE_JP else '(英語ラベル)'} / アンカー4点 一辺{SBL_BASELINE:.0f}m "
+    print(f"フォント: {JP_FONT if USE_JP else '(英語ラベル)'} / アンカー4点 一辺{SBL_BASELINE:.0f}m "
           f"/ 測距σ{SBL_SIGMA_RANGE*100:.0f}cm / 平均{N_SEEDS}")
 
     # (b) RMSE vs 水深: SBL / optical / single-range fallback

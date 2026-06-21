@@ -22,6 +22,8 @@ import sys
 
 import numpy as np
 
+from _plotstyle import plt, USE_JP, Lbl
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import (SIGMA, SIGMA_IMU, P_PARENT, CUBE_SIDE, CUBE_CENTER,
@@ -31,12 +33,74 @@ from src.truth import double_lawnmower_trajectory, true_cube_pointcloud
 from src.sensors import (simulate_observation_sequence, simulate_imu_displacements,
                          stereo_camera_positions, simulate_stereo_observation)
 from src.estimator import estimate_trajectory
-from src.geometry import (aabb_dimensions, aabb_volume, convex_hull_volume,
-                          cube_side_estimate, robust_dimensions, robust_volume,
+from src.geometry import (aabb_volume, cube_side_estimate, robust_volume,
                           robust_cube_side_estimate, stereo_triangulate)
 from src.evaluation import (rmse_xyz, dimension_error_mm, volume_error_rate_pct,
                             pointcloud_rms_to_surface)
-from src.results_io import write_json, write_report
+from src.results_io import write_json, write_report, scenario_dir
+
+FIGDIR = scenario_dir("mapping")
+
+
+def _plot_trajectory(traj, est_no, est_imu, metrics, path):
+    """(A) 真の軌道 vs 観測のみ / 観測+IMU の推定軌道を 3D で比較する図。"""
+    fig = plt.figure(figsize=(11, 5.5))
+    panels = [
+        (Lbl("観測のみ", "obs only"), est_no, "gray",
+         metrics["rmse_total_no_imu_mm"]),
+        (Lbl("観測 + IMU 拘束", "obs + IMU"), est_imu, "tab:blue",
+         metrics["rmse_total_with_imu_mm"]),
+    ]
+    for j, (title, est, col, rmse) in enumerate(panels):
+        ax = fig.add_subplot(1, 2, j + 1, projection="3d")
+        ax.plot(traj[:, 0], traj[:, 1], traj[:, 2], "-", color="red", lw=1.8,
+                label=Lbl("真の軌道", "true"))
+        ax.scatter(est[:, 0], est[:, 1], est[:, 2], c=col, s=22,
+                   label=Lbl("推定", "estimate"))
+        for t in range(len(traj)):     # 真値→推定の誤差線
+            ax.plot([traj[t, 0], est[t, 0]], [traj[t, 1], est[t, 1]],
+                    [traj[t, 2], est[t, 2]], color=col, lw=0.5, alpha=0.5)
+        ax.set_title("%s\nRMSE %.0f mm" % (title, rmse), fontsize=10)
+        ax.set_xlabel("X [m]"); ax.set_ylabel("Y [m]"); ax.set_zlabel("Z [m]")
+        ax.legend(fontsize=8, loc="upper left")
+        ax.view_init(elev=40, azim=-65)
+    fig.suptitle(Lbl(
+        "(A) 軌道推定: IMU 拘束で RMSE %.0f→%.0f mm (改善 %.0f%%)" % (
+            metrics["rmse_total_no_imu_mm"], metrics["rmse_total_with_imu_mm"],
+            metrics["imu_improvement_pct"]),
+        "(A) Trajectory: IMU constraint %.0f->%.0f mm" % (
+            metrics["rmse_total_no_imu_mm"], metrics["rmse_total_with_imu_mm"])))
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_pointcloud(true_cloud, avg, metrics, path):
+    """(B) 既知キューブの真の表面点 vs ステレオ推定点群を 3D で比較する図。"""
+    fig = plt.figure(figsize=(7, 6.5))
+    ax = fig.add_subplot(1, 1, 1, projection="3d")
+    ax.scatter(true_cloud[:, 0], true_cloud[:, 1], true_cloud[:, 2],
+               c="red", s=8, alpha=0.5, label=Lbl("真の表面点", "true surface"))
+    ax.scatter(avg[:, 0], avg[:, 1], avg[:, 2],
+               c="tab:blue", s=10, alpha=0.7,
+               label=Lbl("ステレオ推定点群", "stereo estimate"))
+    ax.set_xlabel("X [m]"); ax.set_ylabel("Y [m]"); ax.set_zlabel("Z [m]")
+    try:
+        ax.set_box_aspect((1, 1, 1))
+    except Exception:
+        pass
+    ax.legend(fontsize=9, loc="upper left")
+    ax.view_init(elev=22, azim=-60)
+    fig.suptitle(Lbl(
+        "(B) キューブ計測: 子機ステレオ looks=%d  点群RMS %.0f mm / "
+        "寸法誤差(ロバスト) %+.0f mm" % (
+            metrics["looks"], metrics["cloud_rms_mm"],
+            metrics["robust_dim_error_mm"]),
+        "(B) Cube: stereo looks=%d  cloud RMS %.0f mm" % (
+            metrics["looks"], metrics["cloud_rms_mm"])))
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
 
 
 def _stereo_cloud(true_cloud, center, seed, looks,
@@ -135,9 +199,13 @@ def part_b_geometry(seed=0, n_per_edge=CUBE_N_PER_EDGE, looks=MAP_LOOKS):
 
 
 def main(seed=SEED, export=True):
-    _, _, _, traj_metrics = part_a_trajectory(seed=seed)
-    _, _, geom_metrics = part_b_geometry(seed=seed)
+    traj, est_no, est_imu, traj_metrics = part_a_trajectory(seed=seed)
+    true_cloud, avg, geom_metrics = part_b_geometry(seed=seed)
     if export:
+        traj_png = os.path.join(FIGDIR, "trajectory.png")
+        cloud_png = os.path.join(FIGDIR, "pointcloud.png")
+        _plot_trajectory(traj, est_no, est_imu, traj_metrics, traj_png)
+        _plot_pointcloud(true_cloud, avg, geom_metrics, cloud_png)
         write_json(
             "mapping/run_mapping",
             {"trajectory": traj_metrics, "geometry": geom_metrics},
@@ -148,7 +216,9 @@ def main(seed=SEED, export=True):
             "(IMU拘束で精度向上)。(B) 既知キューブ表面を子機の2カメラ(ステレオ)で観測し三角測量で\n"
             "推定点群を作り、寸法 L_hat / 体積 V_hat と誤差を出す。位置推定(親機カメラ+音響)とは別系統。",
             condition_sections=["noise", "trajectory", "cube", "stereo", "mapping"],
-            outputs=[("run_mapping.json", "軌道RMSEとキューブ計測の数値")],
+            outputs=[("trajectory.png", "(A) 真の軌道 vs 観測のみ/観測+IMU の推定軌道"),
+                     ("pointcloud.png", "(B) 真の表面点 vs ステレオ推定点群"),
+                     ("run_mapping.json", "軌道RMSEとキューブ計測の数値")],
             results={"軌道RMSE IMUなし→あり":
                      f"{traj_metrics['rmse_total_no_imu_mm']:.0f} → "
                      f"{traj_metrics['rmse_total_with_imu_mm']:.0f} mm",
@@ -156,7 +226,7 @@ def main(seed=SEED, export=True):
                      f"{geom_metrics['robust_dim_error_mm']:+.0f} mm",
                      "点群RMS": f"{geom_metrics['cloud_rms_mm']:.0f} mm"},
             meta={"seed": seed}, math_spec="§5, §6.2")
-        print(f"\n結果を保存: results/mapping/")
+        print("\n結果を保存: results/mapping/")
     print("\n完了。Stage 2: 複数時刻推定 + ジオメトリ評価が一通り動作。")
 
 
