@@ -138,6 +138,27 @@ OPTICAL_MODEL = {
     "dropout_jump": np.deg2rad(float(_get("optical", "dropout_jump_deg", 30.0))),
 }
 
+# =====================================================================
+# 親機姿勢と IMU 姿勢推定 (MATH_SPEC §14)
+# 波で動揺する親機の姿勢を IMU (ジャイロ+加速度+磁気) で推定し、機体カメラ角度を補正する。
+# 角度は config.toml では [deg]/[deg/s] で書き、ここで rad に変換する。
+# =====================================================================
+ATT_ENABLE = bool(_get("attitude", "enable", False))
+ATT_DT = float(_get("attitude", "dt", 0.02))                  # サンプル間隔 [s] (50 Hz)
+ATT_ROLL_AMP = np.deg2rad(float(_get("attitude", "roll_amp_deg", 5.0)))    # 動揺振幅 [rad]
+ATT_PITCH_AMP = np.deg2rad(float(_get("attitude", "pitch_amp_deg", 4.0)))
+ATT_YAW_AMP = np.deg2rad(float(_get("attitude", "yaw_amp_deg", 3.0)))
+ATT_ROLL_PERIOD = float(_get("attitude", "roll_period_s", 4.0))           # 主要周期 [s]
+ATT_PITCH_PERIOD = float(_get("attitude", "pitch_period_s", 5.0))
+ATT_YAW_PERIOD = float(_get("attitude", "yaw_period_s", 8.0))
+ATT_YAW_MEAN = np.deg2rad(float(_get("attitude", "yaw_mean_deg", 0.0)))    # 方位オフセット [rad]
+ATT_GYRO_SIGMA = np.deg2rad(float(_get("attitude", "gyro_sigma_dps", 0.1)))   # [rad/s]
+ATT_GYRO_BIAS = np.deg2rad(float(_get("attitude", "gyro_bias_dps", 0.05)))    # [rad/s]
+ATT_ACC_SIGMA = float(_get("attitude", "acc_sigma", 0.05))    # 加速度ノイズ [m/s^2]
+ATT_MAG_SIGMA = float(_get("attitude", "mag_sigma", 0.02))    # 磁気ノイズ [-]
+ATT_GRAVITY = float(_get("attitude", "gravity", 9.80665))     # 重力 [m/s^2]
+ATT_FILTER_ALPHA = float(_get("attitude", "filter_alpha", 0.98))   # 相補係数 (1=ジャイロのみ)
+
 # 深い水深のテストシナリオ (run_deepwater.py)
 DEEP_DEPTHS = list(_get("deepwater", "depths", [5, 10, 15, 20]))
 DEEP_HORIZ_OFFSET = np.asarray(_get("deepwater", "horiz_offset", [3.0, 2.0]), dtype=float)

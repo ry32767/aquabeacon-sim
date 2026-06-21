@@ -53,6 +53,7 @@ python scripts/run_no_optical.py    # 光学なしフォールバック: 距離+
 python scripts/run_sbl.py           # SBL音響測位: 親機4トランスデューサの多辺測量 (比較手法)
 python scripts/run_opmap.py         # 2次元運用スペック: 濁り×水深の運用可能領域マップ
 python scripts/run_switch.py        # 光学↔フォールバック自動切替: プルーム通過で切替維持
+python scripts/run_attitude.py      # 親機姿勢: 波動揺をIMU(ジャイロ+加速度+磁気)で姿勢推定し角度補正
 python scripts/run_visualize.py     # 発表用の図・アニメ生成 (results/visualize/ にシーン別フォルダ)
 ```
 
@@ -168,6 +169,20 @@ z が弱く、深度センサが締める。
 系統バイアス・距離依存ノイズ・外れ値・**音速ズレ**・**光学/音響の時刻同期**。
 既定はすべて『理想』で従来と完全一致。`[error_model] enable = true` で有効化すると、
 `run_spec.py` の測位スペックがこの誤差込みで厳しくなる (例: バイアス5cm+音速ズレで 90→144 mm)。
+
+### 親機姿勢と IMU 姿勢推定 (`config.toml [attitude]`)
+
+親機は水上で波により不規則に動揺する (MATH_SPEC §14)。機体固定カメラの方位/仰角は
+**機体フレーム**の値 `z_body = forward(Rᵀv)` になり (距離 d は回転不変)、姿勢 `R(t)` を
+無視してワールド角度とすると位置に系統誤差が乗る (特に **yaw→方位角**)。親機 IMU の
+生信号 (ジャイロ `ω=Log(RₖᵀRₖ₊₁)/dt`・加速度 `Rᵀg`=重力で roll/pitch・磁気 `Rᵀm`=
+コンパスで yaw) を **SO(3) 相補フィルタ** `R_pred·Exp((1-α)Log(R_predᵀR_meas))` に通して
+姿勢 `R_est` を推定し、機体角度をワールドへ補正してから既存推定器 (§4,§5) に渡す。
+`R=I` (動揺なし) で従来と完全一致。`attitude.py` / `sensors.simulate_imu_signals`。
+
+`run_attitude.py` はダブル芝刈り軌道で **動揺なし(baseline) / 補正なし(naive) /
+IMU補正** の3条件の軌道 RMSE を比較する (既定の例: 姿勢RMS ~0.07°、位置 96→779→96 mm
+で補正が baseline 付近へ回復)。動揺振幅・IMU ノイズは `config.toml [attitude]` で編集。
 
 ## MBD の構造
 

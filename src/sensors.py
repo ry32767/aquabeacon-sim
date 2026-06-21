@@ -401,6 +401,98 @@ def simulate_sbl_range_sequence(trajectory, anchors, sigma_range, seed):
     return out
 
 
+# ----------------------------------------------------------------------------
+# 親機姿勢と IMU 信号 (MATH_SPEC §14)
+#
+# 親機が波で動揺すると、機体固定カメラの角度は機体フレーム z_body=forward(R^T v) になる
+# (距離 d は回転不変)。IMU はジャイロ(角速度)+加速度(重力基準)+磁気(方位基準)を生信号で
+# 出力し、推定側 (attitude.py の相補フィルタ) が姿勢 R を復元する。
+#
+# 本層は truth (姿勢の真値 R) を知ってよい。R から機体観測と IMU 生信号を作る。
+# ----------------------------------------------------------------------------
+def simulate_observation_attitude(p_child, R, sigma, seed, p_parent=None,
+                                  observe_from_parent=True):
+    """動揺する親機 (姿勢 R) の機体フレーム観測 (d, az_B, el_B) を生成する (MATH_SPEC §14.2)。
+
+    機体観測は z_body = forward_observation(R^T v)。距離 d の**真値**は回転不変 (音響は姿勢に
+    不感) だが、測距そのものには独立な距離ノイズ N(0, sigma_dist) が乗る。角度 (az_B, el_B)
+    には角度ノイズ N(0, sigma_az/el) を加える。R=I なら §1 simulate_observation と完全一致する。
+
+    p_child: 真の子機位置 [m] (3,)
+    R      : 親機姿勢 (3,3) body->world (attitude.euler_to_matrix で作る)
+    sigma  : (sigma_dist [m], sigma_az [rad], sigma_el [rad])
+    戻り値 : 機体観測 z_body=(d, az_B, el_B)
+    """
+    if p_parent is None:
+        p_parent = np.zeros(3)
+    R = np.asarray(R, dtype=float)
+    v_world = relative_vector(p_child, p_parent, observe_from_parent)
+    v_body = R.T @ v_world                      # ワールド相対ベクトル -> 機体フレーム (角度のみ回転)
+    z_true = forward_observation(v_body)        # 距離真値は ||v_body||=||v_world|| (回転不変)
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, np.asarray(sigma, dtype=float), size=3)
+    return z_true + noise
+
+
+def simulate_observation_sequence_attitude(trajectory, R_seq, sigma, seed,
+                                           p_parent=None, observe_from_parent=True):
+    """軌道 (n,3) と親機姿勢列 (n,3,3) から機体フレーム観測列 (n,3) を生成する (MATH_SPEC §14.2)。
+
+    各時刻 k に seed+k を使い、独立かつ再現可能な角度ノイズを与える。R_seq[k] はその時刻の
+    親機姿勢 (波で動揺)。R_seq が全て I なら従来 (姿勢補正なし) の観測列と一致する。
+    """
+    trajectory = np.asarray(trajectory, dtype=float)
+    R_seq = np.asarray(R_seq, dtype=float)
+    z = np.empty_like(trajectory)
+    for k, p in enumerate(trajectory):
+        z[k] = simulate_observation_attitude(p, R_seq[k], sigma, seed=seed + k,
+                                             p_parent=p_parent,
+                                             observe_from_parent=observe_from_parent)
+    return z
+
+
+def simulate_imu_signals(R_seq, dt, seed, gyro_sigma=0.0, gyro_bias=0.0,
+                         acc_sigma=0.0, mag_sigma=0.0, gravity=9.80665,
+                         mag_ref=(0.0, 1.0, 0.0)):
+    """親機姿勢列 (n,3,3) から IMU 生信号 (ジャイロ/加速度/磁気) を生成する (MATH_SPEC §14.3)。
+
+    ジャイロ: 区間 [t_k,t_{k+1}] の機体角速度 omega_k = Log(R_k^T R_{k+1})/dt に
+             バイアス + 白色ノイズを加える。(n-1,3)。
+    加速度  : 重力基準 acc_k = R_k^T (0,0,g) にノイズ。静止浮体の比力近似 (並進加速度は無視)。
+    磁気    : mag_k = R_k^T m_W にノイズ。m_W=mag_ref は世界磁気基準 (既定 (0,1,0)=北)。
+    すべて機体フレーム。seed で再現可能。ノイズ/バイアス 0 で理想 (姿勢を厳密復元できる)。
+
+    R_seq     : (n,3,3) 親機姿勢 (truth)
+    dt        : サンプル間隔 [s]
+    gyro_sigma: ジャイロ白色ノイズ [rad/s]
+    gyro_bias : ジャイロ定常バイアス [rad/s] (スカラ or (3,))
+    acc_sigma : 加速度ノイズ [m/s^2]
+    mag_sigma : 磁気ノイズ [-] (mag_ref と同じスケール)
+    gravity   : 重力加速度 [m/s^2]
+    mag_ref   : 世界磁気基準ベクトル (3,)
+    戻り値    : dict(gyro=(n-1,3), acc=(n,3), mag=(n,3))
+    """
+    from src.attitude import log_so3
+    R_seq = np.asarray(R_seq, dtype=float)
+    n = len(R_seq)
+    rng = np.random.default_rng(seed)
+    g_ref = np.array([0.0, 0.0, float(gravity)])     # 静止時に加速度計が読む重力基準 (上向き +g)
+    m_ref = np.asarray(mag_ref, dtype=float)
+    gyro_bias = np.broadcast_to(np.asarray(gyro_bias, dtype=float), (3,))
+
+    acc = np.empty((n, 3))
+    mag = np.empty((n, 3))
+    for k in range(n):
+        acc[k] = R_seq[k].T @ g_ref + rng.normal(0.0, acc_sigma, 3)
+        mag[k] = R_seq[k].T @ m_ref + rng.normal(0.0, mag_sigma, 3)
+
+    gyro = np.empty((n - 1, 3))
+    for k in range(n - 1):
+        omega = log_so3(R_seq[k].T @ R_seq[k + 1]) / dt    # 区間の真の機体角速度
+        gyro[k] = omega + gyro_bias + rng.normal(0.0, gyro_sigma, 3)
+    return {"gyro": gyro, "acc": acc, "mag": mag}
+
+
 def simulate_imu_displacements(trajectory, sigma_imu, seed):
     """IMU pre-integration による時刻間変位 delta_p の擬似観測を返す (n-1, 3) [m]  (MATH_SPEC §5)。
 

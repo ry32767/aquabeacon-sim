@@ -109,6 +109,61 @@ def double_lawnmower_trajectory(area=None, depth=None, n_legs=None,
     return np.column_stack([xy[:, 0], xy[:, 1], z])
 
 
+# ----------------------------------------------------------------------------
+# 親機姿勢: 波による不規則な動揺の真値 (MATH_SPEC §14.1)
+# ----------------------------------------------------------------------------
+def wave_attitude_sequence(n, dt=None, seed=0,
+                           roll_amp=None, pitch_amp=None, yaw_amp=None,
+                           roll_period=None, pitch_period=None, yaw_period=None,
+                           yaw_mean=None, n_components=3):
+    """波で動揺する親機の姿勢 (Euler roll/pitch/yaw) 列を返す (n,3) [rad]  (MATH_SPEC §14.1)。
+
+    各軸を「非整数比の周波数を持つ複数正弦波の和」で合成し、不規則な揺れを作る:
+        angle(t) = mean + sum_j A_j sin(2*pi f_j t + phase_j)
+    主要周波数 f0 = 1/period に対し f_j = f0 * (1, 1.7, 2.3, ...) と取り、位相は seed 乱数。
+    振幅は主成分が支配的になるよう 1/(j+1) で減衰させ、合計振幅が roll_amp 等に概ね一致する。
+
+    真値生成層 (truth) なので決定的 (seed 固定で再現可能)。引数 None の項目は config を使う。
+
+    n           : サンプル数
+    dt          : サンプル間隔 [s] (None で config.ATT_DT)
+    roll/pitch/yaw_amp   : 各軸の動揺振幅 [rad] (None で config)
+    roll/pitch/yaw_period: 各軸の主要周期 [s]  (None で config)
+    yaw_mean    : yaw の平均 (方位オフセット) [rad] (None で config)
+    n_components: 1軸あたりの正弦波成分数 (多いほど不規則)
+    戻り値      : euler (n,3) [rad] (roll, pitch, yaw)
+    """
+    from src import config
+    dt = config.ATT_DT if dt is None else dt
+    roll_amp = config.ATT_ROLL_AMP if roll_amp is None else roll_amp
+    pitch_amp = config.ATT_PITCH_AMP if pitch_amp is None else pitch_amp
+    yaw_amp = config.ATT_YAW_AMP if yaw_amp is None else yaw_amp
+    roll_period = config.ATT_ROLL_PERIOD if roll_period is None else roll_period
+    pitch_period = config.ATT_PITCH_PERIOD if pitch_period is None else pitch_period
+    yaw_period = config.ATT_YAW_PERIOD if yaw_period is None else yaw_period
+    yaw_mean = config.ATT_YAW_MEAN if yaw_mean is None else yaw_mean
+
+    t = np.arange(n) * dt
+    rng = np.random.default_rng(seed)
+    # 非整数比の周波数倍率 (1, 1.7, 2.3, ...)。整数比を避けて周期性を崩す。
+    ratios = np.array([1.0, 1.7, 2.3, 3.1, 4.3])[:n_components]
+    weights = 1.0 / (1.0 + np.arange(n_components))      # 主成分支配の振幅配分
+    weights = weights / weights.sum()
+
+    def axis(amp, period, mean):
+        f0 = 1.0 / period
+        phases = rng.uniform(-np.pi, np.pi, size=n_components)
+        out = np.full(n, float(mean))
+        for j in range(n_components):
+            out += amp * weights[j] * np.sin(2 * np.pi * f0 * ratios[j] * t + phases[j])
+        return out
+
+    roll = axis(roll_amp, roll_period, 0.0)
+    pitch = axis(pitch_amp, pitch_period, 0.0)
+    yaw = axis(yaw_amp, yaw_period, yaw_mean)
+    return np.column_stack([roll, pitch, yaw])
+
+
 def true_cube_pointcloud(side=None, center=None, n_per_edge=None):
     """既知キューブ (軸平行) の表面点群を返す (M, 3) [m]  (MATH_SPEC §6 テスト用)。
 

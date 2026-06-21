@@ -123,11 +123,13 @@ SENSOR_NAMES = {
     "sbl": "SBL音響 (親機4トランスデューサへの距離=多辺測量)",
     "stereo": "子機ステレオ2カメラ (三角測量)",
     "imu": "IMU (時刻間変位)",
+    "imu_att": "IMU姿勢 (ジャイロ+加速度+磁気→親機姿勢)",
     "depth": "深度センサ (圧力→鉛直 z)",
 }
-SENSOR_ORDER = ["parent_cam", "acoustic1", "sbl", "stereo", "imu", "depth"]
+SENSOR_ORDER = ["parent_cam", "acoustic1", "sbl", "stereo", "imu", "imu_att", "depth"]
 _SENSOR_SHORT = {"parent_cam": "親機カメラ", "acoustic1": "音響1点",
-                 "sbl": "SBL音響", "stereo": "ステレオ", "imu": "IMU", "depth": "深度"}
+                 "sbl": "SBL音響", "stereo": "ステレオ", "imu": "IMU",
+                 "imu_att": "IMU姿勢", "depth": "深度"}
 
 # シナリオ -> {使用センサ, 一言概要, 対応 MATH_SPEC}。索引と各 README の「使用センサ」に使う。
 SCENARIO_INFO = {
@@ -151,6 +153,8 @@ SCENARIO_INFO = {
                "one": "光学↔フォールバック自動切替 (プルーム通過)", "spec": "§12"},
     "visualize": {"sensors": ["parent_cam", "acoustic1", "imu", "stereo"],
                   "one": "発表用 可視化シーン集 (Stage1 + Stage2)", "spec": "§1-§6.2"},
+    "attitude": {"sensors": ["parent_cam", "acoustic1", "imu_att"],
+                 "one": "波で動揺する親機を IMU 姿勢推定し機体角度を補正", "spec": "§14"},
 }
 
 

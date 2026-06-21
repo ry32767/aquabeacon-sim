@@ -15,7 +15,8 @@ SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 # 推定・ジオメトリ層が import してはいけないモジュール名
 FORBIDDEN = {"truth", "src.truth"}
 # 検査対象 (真値を見てはいけない層)
-GUARDED = ["estimator.py", "geometry.py"]
+# attitude.py は姿勢『推定』側 (IMU 信号のみが入力, MATH_SPEC §14) なので truth 非参照。
+GUARDED = ["estimator.py", "geometry.py", "attitude.py"]
 
 
 def _imports_of(path):

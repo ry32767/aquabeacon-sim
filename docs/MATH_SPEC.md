@@ -768,3 +768,179 @@ X_hat = argmin_X  Σ_k Σ_i (d_{k,i} - ||x_k - A_i||)² / σ_range²
 2. **単時刻可観測**: IMU・深度なし・1時刻でも4距離だけで位置が定まる (方位不要)。
 3. **深度の寄与**: 同一平面アレイで深い子機は深度ありの z RMSE がなしより小さい。
 4. **対単一距離**: SBL (4距離+IMU+深度) の RMSE が単一距離フォールバック (§11) 以下。
+
+---
+
+## 14. 親機姿勢と IMU 姿勢推定 (波による動揺の補正)
+
+§0〜§13 は親機が**水面に静止**し、親機の機体フレーム = ワールド ENU と仮定していた
+(親機カメラの方位/仰角がそのままワールド角度)。実際には親機は水上に浮かび、**波で
+不規則に動揺**する。機体固定のカメラが測る角度は**機体フレーム**の値になり、ワールドと
+ズレる。これを補正するには時々刻々の親機姿勢 `R(t)` が必要で、それを親機搭載の **IMU
+(ジャイロ + 加速度 + 磁気)** から推定する。
+
+実装は `src/attitude.py` (純粋回転数学 + 姿勢推定)、`truth.wave_attitude_sequence`
+(姿勢真値)、`sensors.simulate_observation_attitude` / `simulate_imu_signals` (機体観測・
+IMU生信号)、設定は `config.toml [attitude]`。**§1〜§13 の式は変更しない**。本節は観測の
+入る座標系を機体に一般化し、`R=I` (動揺なし) で従来と完全一致する追加項である。
+
+### 14.0 フレームと姿勢表現
+
+- ワールド W: §0 の ENU。**親機機体 B**: 親機に固定 (カメラ・IMU はこの系)。
+- 姿勢 `R ∈ SO(3)`: **body→world**。機体座標 `v_B` のワールド座標は `v_W = R v_B`、
+  逆に `v_B = Rᵀ v_W`。
+- Euler 角は **ZYX (intrinsic): yaw ψ → pitch θ → roll φ**:
+
+```
+R(φ,θ,ψ) = Rz(ψ) Ry(θ) Rx(φ)
+Rx(φ)=[[1,0,0],[0,cφ,-sφ],[0,sφ,cφ]]
+Ry(θ)=[[cθ,0,sθ],[0,1,0],[-sθ,0,cθ]]
+Rz(ψ)=[[cψ,-sψ,0],[sψ,cψ,0],[0,0,1]]
+```
+
+`R(0,0,0)=I` で機体=ワールド (§0 の前提に一致 = 後方互換)。
+
+### (B) 擬似コード
+
+```python
+def euler_to_matrix(roll, pitch, yaw):       # body->world
+    return rot_z(yaw) @ rot_y(pitch) @ rot_x(roll)
+
+def matrix_to_euler(R):                       # 逆 (ZYX)
+    roll  = atan2(R[2,1], R[2,2])
+    pitch = atan2(-R[2,0], hypot(R[0,0], R[1,0]))
+    yaw   = atan2(R[1,0], R[0,0])
+    return (roll, pitch, yaw)
+```
+
+### (C) 数値テストケース (`tests/test_attitude.py`)
+
+| 入力 | 期待 | atol |
+|------|------|------|
+| `euler_to_matrix(0,0,0)` | `I` (3x3 単位行列) | 1e-12 |
+| `euler_to_matrix(0,0,ψ)·(1,0,0)` | `(cosψ, sinψ, 0)` | 1e-9 |
+| `euler_to_matrix(0,θ,0)·(1,0,0)` | `(cosθ, 0, -sinθ)` | 1e-9 |
+| `euler_to_matrix(φ,0,0)·(0,1,0)` | `(0, cosφ, sinφ)` | 1e-9 |
+| `matrix_to_euler(euler_to_matrix(e))` | `e` (往復, 小角) | 1e-9 |
+
+### 14.1 波による姿勢真値 (truth)
+
+動揺は**非整数比の周波数を持つ複数正弦波の和**で合成し、不規則な揺れを作る:
+
+```
+angle(t) = mean + Σ_j A_j sin(2π f_j t + phase_j)
+f_j = (1/period)·(1, 1.7, 2.3, ...)        # 非整数比で周期性を崩す
+A_j ∝ 1/(j+1) (主成分支配),  phase_j ~ seed 乱数
+```
+
+roll/pitch/yaw それぞれを上式で生成 (roll/pitch の mean=0、yaw の mean=方位オフセット)。
+決定的 (seed 固定で再現可能)。
+
+### (C) 数値テストケース
+
+1. **形状**: `wave_attitude_sequence(n)` は `(n,3)` を返す。
+2. **有界**: 各軸 `|angle - mean| ≤ Σ_j A_j` (合成振幅以下)。
+3. **再現性**: 同一 seed で同一列、異なる seed で異なる列。
+
+### 14.2 機体フレーム観測 (sensor)
+
+親機カメラはワールド相対ベクトル `v_W = p_child - p_parent` を**機体フレームで**測る:
+
+```
+v_B    = Rᵀ v_W
+z_body = forward_observation(v_B) = (d, az_B, el_B)      (§1 と同じ関数)
+```
+
+- **距離 d の真値は回転不変** (`‖v_B‖=‖v_W‖`): 音響測距は親機姿勢に不感。ただし測距には
+  §7 の距離ノイズ `N(0, σ_d)` が独立に乗る (姿勢とは無関係な音響測定誤差)。
+- 角度 `az_B, el_B` には §7/§8 の角度ノイズを加える。
+- `R=I` で §1 `simulate_observation` と**完全一致** (後方互換)。
+
+### (C) 数値テストケース
+
+1. **R=I 完全一致**: `simulate_observation_attitude(p, I, σ, seed)` ==
+   `simulate_observation(p, σ, seed)` (atol=1e-12)。
+2. **距離真値の不変**: 任意の `R`・ノイズ0 で `z_body[0] == ‖v_W‖` (rtol=1e-9)。
+
+### 14.3 IMU 生信号 (sensor)
+
+親機 IMU は機体フレームで3種の生信号を出す:
+
+```
+ジャイロ : ω_k   = Log(R_kᵀ R_{k+1}) / dt + b_gyro + N(0, σ_gyro)    # 区間の機体角速度
+加速度   : a_k   = R_kᵀ (0,0,g) + N(0, σ_acc)                        # 静止浮体の重力基準
+磁気     : m_k   = R_kᵀ m_W     + N(0, σ_mag)                        # m_W=(0,1,0)=北 (方位基準)
+```
+
+加速度は重力 `(0,0,g)` を機体で読むので **roll/pitch を絶対に決める** (並進加速度は無視
+する近似)。磁気は方位基準 `m_W` を機体で読むので、傾き補正して **yaw を決める**:
+
+```
+roll  = atan2(a_y, a_z)                         # 重力 -> roll
+pitch = atan2(-a_x, hypot(a_y, a_z))            # 重力 -> pitch
+m_lvl = Ry(pitch) Rx(roll) m                    # 傾き補正
+yaw   = atan2(m_lvl_x, m_lvl_y)                 # 磁気 -> yaw
+```
+
+`a_k = R_kᵀ(0,0,g)` のとき上式は `(φ,θ,ψ)` を厳密復元する (ノイズ0)。
+
+### (C) 数値テストケース
+
+1. **重力基準**: 水平 `R=I` で `a=(0,0,g)`。roll φ で `a = g·(-sinθ, sinφcosθ, cosφcosθ)`。
+2. **加速度→姿勢**: `roll_pitch_from_accel(Rᵀ(0,0,g))` が `(φ,θ)` を復元 (atol=1e-9)。
+3. **磁気→方位**: `yaw_from_mag(Rᵀ m_W, φ, θ)` が `ψ` を復元 (atol=1e-9)。
+4. **理想復元**: ノイズ0で `attitude_from_accel_mag(a,m)` が真の `(φ,θ,ψ)` に一致。
+
+### 14.4 SO(3) 相補フィルタ (姿勢推定, estimator 側)
+
+ジャイロを積分した**予測** `R_pred` (高周波に追従するがドリフトする) と、加速度/磁気の
+**測定** `R_meas` (低周波で絶対基準だが短期はノイズ) を SO(3) 上で混ぜる:
+
+```
+R_0    = attitude_from_accel_mag(a_0, m_0)                  # 初期化
+R_pred = R_{k-1} · Exp(ω_{k-1} · dt)                        # ジャイロ予測
+R_meas = euler→matrix(attitude_from_accel_mag(a_k, m_k))    # 加速度/磁気の測定姿勢
+R_k    = R_pred · Exp( (1-α) · Log(R_predᵀ R_meas) )        # 相補混合
+```
+
+`Exp/Log` は回転ベクトル⇔回転行列 (Rodrigues)。`α∈[0,1]`: `α=1` でジャイロのみ (バイアス
+でドリフト)、`α` 小で加速度/磁気を強く信頼。姿勢推定は IMU 信号のみが入力で **truth を
+参照しない** (MBD)。
+
+### (C) 数値テストケース
+
+1. **静止厳密**: 姿勢一定・ノイズ0なら `R_est == R_true` (全時刻, atol=1e-9)。
+2. **動揺厳密 (ノイズ0)**: `ω_k=Log(R_kᵀR_{k+1})/dt` を使うと `Exp(ω dt)=R_kᵀR_{k+1}` で
+   予測が真値に一致し、測定も真値なので `R_est == R_true` (atol=1e-9)。
+3. **収束**: 初期姿勢を誤らせても、加速度/磁気補正 (α<1) で数ステップで真値へ収束。
+4. **ドリフト**: `α=1` (ジャイロのみ) + バイアスありで姿勢誤差が時間とともに増大する。
+
+### 14.5 姿勢補正つき位置推定 (estimator)
+
+機体観測 `(d, az_B, el_B)` を推定姿勢 `R_est` でワールドへ戻し、**既存の推定器 (§4, §5)
+をそのまま**使う:
+
+```
+u_B = (cos el_B cos az_B, cos el_B sin az_B, sin el_B)   # 機体視線
+u_W = R_est · u_B                                         # ワールドへ回す
+(az_W, el_W) = (atan2(u_Wy,u_Wx), atan2(u_Wz, hypot(u_Wx,u_Wy)))
+z_world = (d, az_W, el_W)   →  estimate_position / estimate_trajectory (§4,§5)
+```
+
+正準観測モデルは `h(x,R) = forward_observation(Rᵀ(x - p_parent))`。`R_est = R_true` かつ
+ノイズ0なら `z_world` は §1 のワールド観測を厳密復元し、推定は真値に一致する。`R=I` なら
+`z_world = z_body` (補正なし=後方互換)。
+
+> **意義**: 動揺を無視して機体角度をワールド角度として推定する (素朴) と、姿勢誤差ぶんの
+> 系統バイアスが位置に乗る。IMU 姿勢推定で補正すると、残差は姿勢推定誤差 (主にジャイロ
+> バイアス・ノイズ起因) のみに縮む。yaw は方位角に最も効くため、磁気 (コンパス) 基準が
+> 重要 (§11 の「方位基準=コンパス」前提と整合する)。
+
+### (C) 数値テストケース
+
+1. **R=I 恒等**: `body_bearing_to_world(z, I) == z` (atol=1e-12)。
+2. **ワールド復元**: 真の `R` で `body_bearing_to_world(forward(Rᵀv_W), R)` の角度が
+   `forward(v_W)` の角度に一致 (atol=1e-9)。
+3. **端から端まで (ノイズ0)**: 動揺する親機の機体観測列を、完全な IMU (ノイズ0) の相補
+   フィルタ姿勢で補正 → `estimate_trajectory` が真の軌道に一致 (atol=1e-6)。
+4. **後方互換**: `R_seq=I` の補正は観測を変えないので、推定が §5 (姿勢なし) と一致。
