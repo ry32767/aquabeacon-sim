@@ -22,12 +22,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import (SIGMA, SIGMA_IMU, P_PARENT, SEED, OPTICAL_MODEL,
                         DEEP_DEPTHS, DEEP_HORIZ_OFFSET, DEEP_CLARITIES,
-                        DEEP_TRAJ_DEPTH, DEEP_TRAJ_CLARITY, DEEP_MC_N)
+                        DEEP_TRAJ_DEPTH, DEEP_TRAJ_CLARITY, DEEP_MC_N,
+                        ERROR_MODEL, ERROR_MODEL_ENABLE)
 from src.truth import double_lawnmower_trajectory
 from src.sensors import (optical_snr, optical_angular_sigma, optical_dropout_prob,
                          simulate_observation_realistic,
                          simulate_observation_sequence_realistic,
-                         simulate_imu_displacements)
+                         simulate_imu_displacements, apply_attitude_error_config)
 from src.estimator import estimate_position, estimate_trajectory
 from src.evaluation import rmse_xyz
 from src.results_io import write_json, write_csv, scenario_dir, write_report
@@ -36,6 +37,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIGDIR = scenario_dir("deepwater")
 
 CLARITY_LABEL = {0.05: "clear", 0.3: "coastal", 0.5: "coastal+", 1.0: "turbid"}
+
+# config.toml [error_model]/[acoustic]/[sync] の現実誤差 (有効時のみ観測に重ねる)。
+# 光減衰 (§9) の optical_model に加え、バイアス・距離成長・外れ値・音速ズレ・遅延を反映する。
+_ERR = dict(ERROR_MODEL) if ERROR_MODEL_ENABLE else {}
 
 
 def _model(c, dropout=True):
@@ -57,13 +62,22 @@ def _range_at_depth(depth):
 
 
 def _pos_rmse_mm(depth, model, seed=SEED, n=DEEP_MC_N):
-    """光学モデル込みの測位 RMSE total [mm] (ドロップアウト含む)。"""
+    """光学モデル込みの測位 RMSE total [mm] (ドロップアウト含む)。
+
+    推定の角度重みは σ_ang(d) で校正した適応重み (well-calibrated)。深さ/濁りで角度ノイズが
+    増えるとき推定側もそれを重みにする。他の光学系シナリオ (sbl/depth/no_optical/opmap/spec)
+    と重み付けを揃える。
+    """
     truth = _truth_at_depth(depth)
+    s = optical_angular_sigma(_range_at_depth(depth), model)
+    sig = (SIGMA[0], s, s)                              # §9 校正σ (適応重み)
     est = np.empty((n, 3))
     for i in range(n):
         z = simulate_observation_realistic(truth, SIGMA, seed=seed + i,
-                                           p_parent=P_PARENT, optical_model=model)
-        est[i] = estimate_position(z, SIGMA, p_parent=P_PARENT)
+                                           p_parent=P_PARENT, optical_model=model,
+                                           **_ERR)
+        z = apply_attitude_error_config(z, seed=seed + i)   # §14 波動揺 (config 既定 OFF)
+        est[i] = estimate_position(z, sig, p_parent=P_PARENT)
     return rmse_xyz(truth, est)["total"] * 1000
 
 
@@ -100,11 +114,15 @@ def trajectory_demo(seed=SEED):
                                        n_legs=2, pts_per_leg=6, origin=(3.0, 3.0))
     model = _model(c, dropout=True)
     z = simulate_observation_sequence_realistic(traj, SIGMA, seed=seed,
-                                                p_parent=P_PARENT, optical_model=model)
+                                                p_parent=P_PARENT, optical_model=model,
+                                                **_ERR)
+    z = apply_attitude_error_config(z, seed=seed)        # §14 波動揺 (config [attitude].as_error。既定 OFF)
     imu = simulate_imu_displacements(traj, SIGMA_IMU, seed=seed + 1)
-    est_lin = estimate_trajectory(z, SIGMA, imu_deltas=imu, sigma_imu=SIGMA_IMU,
+    s = optical_angular_sigma(float(np.linalg.norm(traj.mean(axis=0))), model)
+    sig = (SIGMA[0], s, s)                              # §9 校正σ (適応重み, 上の測位と統一)
+    est_lin = estimate_trajectory(z, sig, imu_deltas=imu, sigma_imu=SIGMA_IMU,
                                   p_parent=P_PARENT, loss="linear")
-    est_rob = estimate_trajectory(z, SIGMA, imu_deltas=imu, sigma_imu=SIGMA_IMU,
+    est_rob = estimate_trajectory(z, sig, imu_deltas=imu, sigma_imu=SIGMA_IMU,
                                   p_parent=P_PARENT, loss="huber")
     r_lin = rmse_xyz(traj, est_lin)["total"] * 1000
     r_rob = rmse_xyz(traj, est_rob)["total"] * 1000
@@ -237,7 +255,17 @@ def main(seed=SEED):
         "親機の光学追跡を水中の減衰・拡散モデル込みで評価する。水の濁り c を clear/coastal/turbid と\n"
         "振り、水深 5〜20m で測位精度 (RMSE) と見失い (ドロップアウト) を掃引する。深い/濁るほど\n"
         "SNR が落ちて角度精度が悪化し見失いが増える。最後に深い濁り水の軌道を linear vs robust で比較する。",
-        condition_sections=["noise", "optical", "deepwater", "estimator"],
+        condition_sections=["noise", "optical", "error_model", "acoustic", "sync",
+                            "deepwater", "attitude"],
+        not_reflected=[
+            ("`[estimator]` (loss/f_scale)",
+             "深い濁り水の軌道デモは linear と robust(huber) を**両方ハードコードして比較**するため、"
+             "config の `loss` は使わない (f_scale は estimator 既定)。"),
+            ("`[depth]`", "本シナリオは深度センサを使わない (光学+音響+IMUのみ)。"
+                          "深度融合は `run_depth` / `run_no_optical` を参照。"),
+            ("`[attitude]`", "親機姿勢は固定と仮定 (波動揺は `run_attitude`)。"),
+            ("`[sbl]` / `[stereo]`", "SBL・子機ステレオは使わない (別シナリオ)。"),
+        ],
         outputs=[("deepwater.png", "σ_ang/SNR/見失い/測位RMSE/linear vs robust軌道"),
                  ("run_deepwater.json", "曲線データと軌道比較"),
                  ("run_deepwater.csv", "濁り×水深の測位RMSE")],

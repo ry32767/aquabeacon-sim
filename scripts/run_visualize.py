@@ -39,19 +39,22 @@ from src.config import (SIGMA, SIGMA_IMU, P_PARENT, CUBE_SIDE, CUBE_CENTER,
                         VIZ_MAX_LOOKS, VIZ_ROTATE_FRAMES, VIZ_SENS_DISTS,
                         SENS_DEPTH_Z, SENS_ANGLE_DEGS, SENS_ELEV_DEGS,
                         SENS_NADIR_D, STEREO_BASELINE, STEREO_SIGMA_CAM,
-                        STEREO_STANDOFF, SENS_STEREO_STANDOFFS, SENS_STEREO_BASELINES)
+                        STEREO_STANDOFF, STEREO_UP,
+                        SENS_STEREO_STANDOFFS, SENS_STEREO_BASELINES)
 from src.truth import (true_child_position, demo_trajectory,
                        double_lawnmower_trajectory, true_cube_pointcloud)
 from src.sensors import (forward_observation, simulate_observation,
                          inverse_observation, simulate_observation_sequence,
                          simulate_imu_displacements, stereo_camera_positions,
-                         simulate_stereo_observation)
+                         simulate_stereo_observation, apply_attitude_error_config)
 from src.estimator import (residual, h, weight_matrix, estimate_position,
-                           estimate_trajectory)
+                           estimate_trajectory, position_covariance, gdop)
 from src.geometry import (aabb_dimensions, robust_cube_side_estimate,
                           robust_volume, aabb_volume, stereo_triangulate)
 from src.evaluation import (monte_carlo_estimates, rmse_xyz, dimension_error_mm,
-                            volume_error_rate_pct, pointcloud_rms_to_surface)
+                            volume_error_rate_pct, pointcloud_rms_to_surface,
+                            crlb_position, crlb_rmse, rmse_with_ci)
+from src.config import SIGMA_DEPTH, SBL_ANCHORS, SBL_SIGMA_RANGE
 from src.results_io import write_report
 
 # ----------------------------------------------------------------------------
@@ -341,7 +344,7 @@ def scene_converge():
 def scene_trajectory(seed=100):
     print("scene4: 軌道追従アニメ (Stage2先取り) ...")
     outdir = scene_dir("positioning", "4_trajectory")
-    traj = demo_trajectory(n_points=48)
+    traj = demo_trajectory()                 # config [demo_trajectory] n_points を反映
     # 各時刻: ノイズ付き観測 -> 単時刻推定 (Stage1 を各点へ独立適用)
     est = np.empty_like(traj)
     for i, p in enumerate(traj):
@@ -414,6 +417,7 @@ def scene_traj_imu(seed=0):
     outdir = scene_dir("positioning", "5_traj_imu")
     traj = double_lawnmower_trajectory()
     z = simulate_observation_sequence(traj, SIGMA, seed=seed, p_parent=P_PARENT)
+    z = apply_attitude_error_config(z, seed=seed)        # §14 波動揺 (config 既定 OFF)
     imu = simulate_imu_displacements(traj, SIGMA_IMU, seed=seed + 9999)
     est_no = estimate_trajectory(z, SIGMA, p_parent=P_PARENT)
     est_imu = estimate_trajectory(z, SIGMA, imu_deltas=imu, sigma_imu=SIGMA_IMU,
@@ -531,7 +535,7 @@ def _stereo_per_look(true_cloud, center, seed, max_looks,
     n = len(true_cloud)
     out = np.empty((n, max_looks, 3))
     for i, p in enumerate(true_cloud):
-        c_L, c_R = stereo_camera_positions(p, center, standoff, baseline)
+        c_L, c_R = stereo_camera_positions(p, center, standoff, baseline, up=STEREO_UP)
         for m in range(max_looks):
             brg = simulate_stereo_observation(p, c_L, c_R, sigma_cam,
                                               seed=seed + i * 1000 + m)
@@ -589,6 +593,7 @@ def scene_mapping_progress(seed=0):
     traj = double_lawnmower_trajectory(area=(6.0, 4.0), depth=-7.5,
                                        n_legs=3, pts_per_leg=6, origin=(3.0, 4.0))
     z = simulate_observation_sequence(traj, SIGMA, seed=seed, p_parent=P_PARENT)
+    z = apply_attitude_error_config(z, seed=seed)        # §14 波動揺 (config 既定 OFF)
     imu = simulate_imu_displacements(traj, SIGMA_IMU, seed=seed + 9999)
     est_no = estimate_trajectory(z, SIGMA, p_parent=P_PARENT)
     est_imu = estimate_trajectory(z, SIGMA, imu_deltas=imu, sigma_imu=SIGMA_IMU,
@@ -808,6 +813,220 @@ def scene_stage2_sensitivity(seed=0, n_per_edge=5):
     print(f"  -> {png}")
 
 
+# ============================================================================
+# 検証シーン群 (validation/): 研究グレードの不確かさ・効率・幾何希釈を発表用に可視化
+#   MATH_SPEC §4.5 (共分散/CRLB/GDOP) と §15 (効率/一貫性)。新規追加。
+# ============================================================================
+def _truth_at_elev(elev_deg, d):
+    """仰角 elev_deg・距離 d・方位0 の真値 (rho,0,d sinφ)。"""
+    phi = np.deg2rad(elev_deg)
+    return np.array([d * np.cos(phi), 0.0, d * np.sin(phi)])
+
+
+def scene_crlb_ellipsoid(n=VIZ_CLOUD_N, seed=0):
+    """Scene 11: 経験推定クラウド + 経験2σ楕円体 + **解析CRLB楕円体** の重ね描き。
+
+    経験のばらつき (青) が理論下界 CRLB の楕円体 (緑ワイヤ) とほぼ一致する = 推定が効率的
+    (情報理論的に最適) であることを立体的に見せる (MATH_SPEC §4.5, §15)。
+    """
+    print("scene11: CRLB 楕円体の重ね描き (効率の可視化) ...")
+    outdir = scene_dir("validation", "11_crlb_ellipsoid")
+    truth = true_child_position()
+    est = monte_carlo_estimates(truth, SIGMA, n=n, seed=seed, p_parent=P_PARENT)
+    mean = est.mean(axis=0)
+    cov_emp = np.cov(est.T)                                  # 経験共分散
+    cov_crlb = crlb_position(truth, SIGMA, p_parent=P_PARENT)  # 解析 CRLB (§4.5)
+    rmse = rmse_xyz(truth, est)["total"] * 1000
+    crlb_mm = crlb_rmse(truth, SIGMA, p_parent=P_PARENT) * 1000
+    ex, ey, ez = _ellipsoid_surface(mean, cov_emp, k=2.0)
+    cx, cy, cz = _ellipsoid_surface(truth, cov_crlb, k=2.0)
+
+    def draw(ax):
+        ax.scatter(est[:, 0], est[:, 1], est[:, 2], c="tab:blue", s=5, alpha=0.18,
+                   label=L("推定 (N=%d)" % n, "estimates (N=%d)" % n))
+        ax.plot_surface(ex, ey, ez, color="tab:orange", alpha=0.16, linewidth=0)
+        ax.plot_wireframe(cx, cy, cz, color="tab:green", linewidth=0.6, alpha=0.7,
+                          rcount=12, ccount=12)
+        ax.scatter(*truth, c="red", s=130, marker="*", label=L("真値", "truth"))
+        ax.scatter([], [], [], c="tab:orange", marker="s",
+                   label=L("経験 2σ", "empirical 2σ"))
+        ax.scatter([], [], [], c="tab:green", marker="s",
+                   label=L("CRLB 2σ (理論下界)", "CRLB 2σ (bound)"))
+        _set_3d_labels(ax, L(
+            "効率の可視化: 経験ばらつき≈CRLB  (RMSE %.1f mm / CRLB %.1f mm)" % (rmse, crlb_mm),
+            "Efficiency: empirical spread ≈ CRLB  (RMSE %.1f / CRLB %.1f mm)" % (rmse, crlb_mm)))
+        ax.legend(loc="upper left", fontsize=8)
+
+    fig = plt.figure(figsize=(8, 6.5))
+    ax = fig.add_subplot(111, projection="3d")
+    draw(ax); ax.view_init(elev=18, azim=-60)
+    png = os.path.join(outdir, "crlb_ellipsoid.png")
+    fig.savefig(png, bbox_inches="tight"); plt.close(fig)
+
+    fig = plt.figure(figsize=(8, 6.5))
+    ax = fig.add_subplot(111, projection="3d")
+    draw(ax)
+    frames = VIZ_ROTATE_FRAMES
+
+    def update(i):
+        ax.view_init(elev=18, azim=-60 + i * (360 / frames))
+        return ()
+    anim = FuncAnimation(fig, update, frames=frames, blit=False)
+    saved = _save_anim(anim, "crlb_ellipsoid_rotate", fps=18, outdir=outdir)
+    plt.close(fig)
+    print(f"  -> {png}")
+    for s in saved:
+        print(f"  -> {s}")
+    print(f"  RMSE {rmse:.1f} mm / CRLB {crlb_mm:.1f} mm / 効率 {rmse/crlb_mm:.3f}")
+
+
+def scene_gdop_map():
+    """Scene 12: GDOP マップ (距離 × 仰角)。観測幾何→達成可能精度の地図 (MATH_SPEC §4.5)。"""
+    print("scene12: GDOP マップ (距離×仰角) ...")
+    outdir = scene_dir("validation", "12_gdop_map")
+    rng_d = np.linspace(4, 22, 40)
+    elev = np.linspace(-89, -20, 40)
+    G = np.empty((len(elev), len(rng_d)))
+    for ie, e in enumerate(elev):
+        for idx, d in enumerate(rng_d):
+            G[ie, idx] = gdop(crlb_position(_truth_at_elev(e, d), SIGMA,
+                                            p_parent=P_PARENT)) * 1000
+
+    fig, ax = plt.subplots(figsize=(8.5, 6))
+    im = ax.pcolormesh(rng_d, elev, G, shading="auto", cmap="viridis")
+    cb = fig.colorbar(im, ax=ax); cb.set_label(L("GDOP (位置1σ半径) [mm]", "GDOP [mm]"))
+    cs = ax.contour(rng_d, elev, G, levels=[50, 75, 100, 150, 200], colors="white",
+                    linewidths=0.8)
+    ax.clabel(cs, inline=True, fontsize=8, fmt="%.0f mm")
+    ax.set_xlabel(L("親機-子機距離 d [m]", "range d [m]"))
+    ax.set_ylabel(L("仰角 φ [deg] (-90=真下)", "elevation φ [deg]"))
+    ax.set_title(L("GDOP マップ: 観測幾何 → 達成可能な測位精度 (MATH_SPEC §4.5)",
+                  "GDOP map: geometry → achievable accuracy"))
+    fig.tight_layout()
+    png = os.path.join(outdir, "gdop_map.png")
+    fig.savefig(png, bbox_inches="tight"); plt.close(fig)
+    print(f"  -> {png}")
+
+
+def scene_efficiency(n=VIZ_CLOUD_N):
+    """Scene 13: 経験RMSE が CRLB に漸近する (効率) を仰角・距離掃引 + 95%CI で示す (§15)。"""
+    print("scene13: 効率 (経験RMSE vs CRLB, CIつき) ...")
+    outdir = scene_dir("validation", "13_efficiency")
+    elevs = [-89, -80, -70, -60, -45, -30]
+    ranges = VIZ_SENS_DISTS
+    fig, axs = plt.subplots(1, 2, figsize=(13, 4.8))
+
+    # (a) 仰角掃引 (d=12.5)
+    crlb_e = [crlb_rmse(_truth_at_elev(e, 12.5), SIGMA, p_parent=P_PARENT) * 1000
+              for e in elevs]
+    rmse_e, lo_e, hi_e = [], [], []
+    for j, e in enumerate(elevs):
+        est = monte_carlo_estimates(_truth_at_elev(e, 12.5), SIGMA, n=n,
+                                    seed=400 + j, p_parent=P_PARENT)
+        ci = rmse_with_ci(est, _truth_at_elev(e, 12.5), seed=0)
+        rmse_e.append(ci["rmse"] * 1000)
+        lo_e.append((ci["rmse"] - ci["ci_low"]) * 1000)
+        hi_e.append((ci["ci_high"] - ci["rmse"]) * 1000)
+    axs[0].plot(elevs, crlb_e, "k-", lw=2, label=L("CRLB (理論下界)", "CRLB"))
+    axs[0].errorbar(elevs, rmse_e, yerr=[lo_e, hi_e], fmt="o", color="tab:blue",
+                    capsize=3, label=L("経験RMSE (95%CI)", "MC RMSE (95% CI)"))
+    axs[0].set_xlabel(L("仰角 φ [deg]", "elevation [deg]"))
+    axs[0].set_ylabel("RMSE / CRLB [mm]")
+    axs[0].set_title(L("(a) 仰角掃引: RMSE は CRLB に漸近 (d=12.5m)",
+                       "(a) elevation: RMSE → CRLB"))
+    axs[0].grid(alpha=0.3); axs[0].legend(fontsize=9)
+
+    # (b) 距離掃引 (φ=-60)
+    crlb_r = [crlb_rmse(_truth_at_elev(-60, d), SIGMA, p_parent=P_PARENT) * 1000
+              for d in ranges]
+    rmse_r = []
+    for j, d in enumerate(ranges):
+        est = monte_carlo_estimates(_truth_at_elev(-60, d), SIGMA, n=n,
+                                    seed=500 + j, p_parent=P_PARENT)
+        rmse_r.append(rmse_xyz(_truth_at_elev(-60, d), est)["total"] * 1000)
+    axs[1].plot(ranges, crlb_r, "k-", lw=2, label=L("CRLB", "CRLB"))
+    axs[1].plot(ranges, rmse_r, "o", color="tab:blue", label=L("経験RMSE", "MC RMSE"))
+    axs[1].plot(ranges, [d * SIGMA[1] * 1000 for d in ranges], "r:",
+                label=L("d·σ_ang (目安)", "d·σ_ang"))
+    axs[1].set_xlabel(L("距離 d [m]", "range d [m]")); axs[1].set_ylabel("RMSE [mm]")
+    axs[1].set_title(L("(b) 距離掃引: 角度誤差×距離が支配 (φ=-60°)", "(b) range sweep"))
+    axs[1].grid(alpha=0.3); axs[1].legend(fontsize=9)
+
+    eff = [r / c for r, c in zip(rmse_e, crlb_e)]
+    fig.suptitle(L(
+        "推定の効率: 経験RMSE が Cramér-Rao 下界に漸近 (効率 %.2f–%.2f)" % (min(eff), max(eff)),
+        "Estimator efficiency: MC RMSE approaches the Cramér-Rao bound"))
+    fig.tight_layout()
+    png = os.path.join(outdir, "efficiency.png")
+    fig.savefig(png, bbox_inches="tight"); plt.close(fig)
+    print(f"  -> {png}  (efficiency {min(eff):.3f}-{max(eff):.3f})")
+
+
+def _sbl_single_cov(x, anchors, sigma_range, with_depth=False, sigma_depth=None):
+    """単時刻 SBL (多辺測量) の解の共分散 (§4.5, §13)。F=Σ u_i u_iᵀ/σ² (+深度)。"""
+    x = np.asarray(x, float); anchors = np.asarray(anchors, float)
+    F = np.zeros((3, 3))
+    for a in anchors:
+        diff = x - a
+        u = diff / np.linalg.norm(diff)
+        F += np.outer(u, u) / sigma_range**2
+    if with_depth:
+        F += np.outer([0, 0, 1], [0, 0, 1]) / sigma_depth**2
+    return np.linalg.pinv(F)
+
+
+def _square_anchors(baseline):
+    """一辺 baseline の正方形 4 隅 (z=0) のアンカー (MATH_SPEC §13.1)。"""
+    b = baseline / 2.0
+    return np.array([[b, b, 0], [b, -b, 0], [-b, b, 0], [-b, -b, 0]], dtype=float)
+
+
+def scene_fusion_uncertainty():
+    """Scene 14: センサ構成ごとの単時刻 CRLB を発表用に正直比較 (MATH_SPEC §4.5, §10, §13)。
+
+    同一の near-nadir 幾何 (φ=-80°, d=12m) で、(1) 光学+音響1点、(2) +深度、(3) SBL4点(4m)+深度、
+    (4) SBL4点(16m)+深度 の位置1σ (GDOP) と z 1σ を比較する。**正直な知見**を一目で示す:
+      - 深度センサ (§10) は z を直接締める (z 1σ が圧縮)。
+      - SBL (§13) は**光なし**で測位できるが、深い子機では**大型アレイが必要** (小型は GDOP 悪化、
+        §13.2 の同一平面 GDOP)。1m級では光学より大きく劣り、16m級で光学+深度を上回る。
+    """
+    print("scene14: センサ構成ごとの CRLB 比較 (正直版) ...")
+    outdir = scene_dir("validation", "14_fusion_uncertainty")
+    truth = _truth_at_elev(-80, 12.0)
+    zc = lambda C: np.sqrt(C[2, 2]) * 1000
+    C_opt = position_covariance(truth, SIGMA, p_parent=P_PARENT)
+    C_optd = position_covariance(truth, SIGMA, p_parent=P_PARENT,
+                                 with_depth=True, sigma_depth=SIGMA_DEPTH)
+    C_sbl4 = _sbl_single_cov(truth, _square_anchors(4.0), SBL_SIGMA_RANGE,
+                             with_depth=True, sigma_depth=SIGMA_DEPTH)
+    C_sbl16 = _sbl_single_cov(truth, _square_anchors(16.0), SBL_SIGMA_RANGE,
+                              with_depth=True, sigma_depth=SIGMA_DEPTH)
+    labels = [L("光学+音響1点", "optical+range"),
+              L("+深度", "+depth"),
+              L("SBL 4m+深度", "SBL 4m+depth"),
+              L("SBL 16m+深度", "SBL 16m+depth")]
+    covs = [C_opt, C_optd, C_sbl4, C_sbl16]
+    gd = [gdop(C) * 1000 for C in covs]
+    zv = [zc(C) for C in covs]
+    x = np.arange(len(labels)); w = 0.38
+    fig, ax = plt.subplots(figsize=(9.5, 5.2))
+    b1 = ax.bar(x - w / 2, gd, w, color="tab:blue", label=L("GDOP (3D 1σ)", "GDOP (3D)"))
+    b2 = ax.bar(x + w / 2, zv, w, color="tab:green", label=L("z 1σ", "z 1σ"))
+    ax.bar_label(b1, fmt="%.0f", fontsize=9); ax.bar_label(b2, fmt="%.0f", fontsize=9)
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=9)
+    ax.set_ylabel(L("位置不確かさ 1σ [mm]", "position 1σ [mm]"))
+    ax.set_title(L(
+        "センサ構成と CRLB (φ=-80°, d=12m): 深度→z圧縮 / SBLは光なしだが大型アレイ要 (§13.2)",
+        "CRLB by sensor config: depth shrinks z; SBL is optics-free but needs a large array"))
+    ax.legend(fontsize=9); ax.grid(alpha=0.3, axis="y")
+    fig.tight_layout()
+    png = os.path.join(outdir, "fusion_uncertainty.png")
+    fig.savefig(png, bbox_inches="tight"); plt.close(fig)
+    print(f"  -> {png}")
+    print(f"  GDOP [mm]: opt {gd[0]:.0f} / +depth {gd[1]:.0f} / "
+          f"SBL4m {gd[2]:.0f} / SBL16m {gd[3]:.0f}")
+
+
 def main():
     print(f"フォント: {JP_FONT if USE_JP else '(日本語フォント無し -> 英語ラベル)'}")
     print(f"出力先  : {FIGDIR}\n")
@@ -824,19 +1043,42 @@ def main():
     scene_multilook_converge()
     scene_traj_converge()
     scene_stage2_sensitivity()
+    # 検証 (研究グレードの不確かさ・効率・幾何希釈: §4.5, §15)
+    scene_crlb_ellipsoid()
+    scene_gdop_map()
+    scene_efficiency()
+    scene_fusion_uncertainty()
     write_report(
-        "visualize", "発表用 可視化シーン集 (Stage1 + Stage2)",
-        "推定結果を人に見せるための図・アニメーション (全10シーン)。2系統 (測位=親機1カメラ /\n"
-        "ジオメトリ=子機ステレオ) で `positioning/` と `geometry/` にシーン別フォルダ分けして出力。\n"
-        "各シーンに PNG (+ アニメは GIF / MP4)。乱数は seed 固定で再現可能。仕様は docs/VISUALIZATION.md。",
+        "visualize", "発表用 可視化シーン集 (Stage1 + Stage2 + 検証)",
+        "推定結果を人に見せるための図・アニメーション (全14シーン)。3系統 (測位=親機1カメラ /\n"
+        "ジオメトリ=子機ステレオ / 検証=不確かさ・効率・GDOP) で `positioning/`・`geometry/`・\n"
+        "`validation/` にシーン別フォルダ分けして出力。各シーンに PNG (+ アニメは GIF / MP4)。\n"
+        "検証シーン (11-14) は CRLB楕円体の重ね描き・GDOPマップ・効率(RMSE→CRLB, CIつき)・\n"
+        "センサ融合の不確かさ比較 (MATH_SPEC §4.5, §15) で、論文の妥当性図をそのまま発表に使える。\n"
+        "乱数は seed 固定で再現可能。仕様は docs/VISUALIZATION.md。",
         condition_sections=["noise", "truth", "stereo", "trajectory",
-                            "demo_trajectory", "visualization"],
+                            "demo_trajectory", "visualization", "attitude",
+                            "depth", "sbl", "montecarlo"],
+        not_reflected=[
+            ("`[error_model]`/`[acoustic]`/`[sync]`",
+             "**発表・教育用の可視化**なので、観測は一定σの理想ノイズで生成する。収束アニメ等は"
+             "ノイズフリーや零平均ガウスを前提に『真値へ収束する』様子を見せるため、系統バイアス・"
+             "音速ズレ・外れ値は重ねない。現実誤差込みの数値評価は `run_spec`/`run_deepwater` を参照。"),
+            ("`[optical]` (減衰σ/見失い)",
+             "光減衰モデルは可視化では使わない (一定σ)。減衰の可視化は `run_deepwater` を参照。"),
+            ("`[depth]`/`[sbl]`/`[attitude]`", "深度・SBL・親機姿勢のシーンは含まない (各専用シナリオ)。"),
+            ("`[visualization] sens_dists`",
+             "scene10 の距離(standoff)掃引は `[sensitivity] stereo_standoffs` を使う。"
+             "`sens_dists` は現状この図に未接続 (将来の距離掃引パネル用の予約値)。"),
+        ],
         outputs=[("positioning/", "測位シーン (1_cloud3d, 2_sensitivity, 3_converge, "
                   "4_trajectory, 5_traj_imu, 7_mapping_progress, 9_traj_converge)"),
                  ("geometry/", "ジオメトリシーン (6_cube_mapping, 8_multilook_converge, "
-                  "10_stage2_sensitivity)")],
-        math_spec="§1-§6.2")
-    print("\n完了。results/visualize/positioning/ と results/visualize/geometry/ の各シーン")
+                  "10_stage2_sensitivity)"),
+                 ("validation/", "検証シーン (11_crlb_ellipsoid, 12_gdop_map, "
+                  "13_efficiency, 14_fusion_uncertainty)")],
+        math_spec="§1-§6.2, §4.5, §15")
+    print("\n完了。results/visualize/{positioning,geometry,validation}/ の各シーン")
     print("フォルダに PNG / GIF / MP4 が分かれて出力されました。発表資料に使ってください。")
 
 

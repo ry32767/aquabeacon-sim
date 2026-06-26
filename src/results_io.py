@@ -13,8 +13,12 @@ MBD 上は評価/出力の補助 (truth/estimator のロジックには関与し
 再現性のため、保存する payload には呼び出し側で seed や設定を含めること。
 """
 import csv
+import hashlib
 import json
 import os
+import platform
+import subprocess
+import sys
 from datetime import datetime, timezone
 
 # results/ はリポジトリ直下 (このファイルは src/ にある)
@@ -31,6 +35,85 @@ def _stamp():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# ----------------------------------------------------------------------------
+# 再現性のための来歴 (provenance) 記録。論文の図を後年に再生成・照合できるよう、
+# git コミット・ライブラリ版・OS・乱数方式・解決済み config を成果物に埋め込む。
+# 数値出力には一切影響しない (純追加)。git/ライブラリが無くても例外で落ちない。
+# ----------------------------------------------------------------------------
+def _git_info():
+    """現在の git コミット・ブランチ・dirty 状態 (取得不能なら None)。"""
+    info = {"commit": None, "branch": None, "dirty": None}
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        def _run(args):
+            return subprocess.run(["git", "-C", root, *args],
+                                  capture_output=True, text=True, timeout=5)
+        c = _run(["rev-parse", "HEAD"])
+        if c.returncode == 0:
+            info["commit"] = c.stdout.strip()
+        b = _run(["rev-parse", "--abbrev-ref", "HEAD"])
+        if b.returncode == 0:
+            info["branch"] = b.stdout.strip()
+        s = _run(["status", "--porcelain"])
+        if s.returncode == 0:
+            info["dirty"] = bool(s.stdout.strip())
+    except Exception:
+        pass                                    # git 不在/タイムアウト等は黙って None
+    return info
+
+
+def _lib_versions():
+    """Python・主要ライブラリ・OS の版 (数値結果は scipy/numpy 版に依存しうる)。"""
+    out = {"python": sys.version.split()[0], "platform": platform.platform()}
+    for mod in ("numpy", "scipy", "matplotlib"):
+        try:
+            out[mod] = __import__(mod).__version__
+        except Exception:
+            out[mod] = None
+    return out
+
+
+def _resolved_config():
+    """src.config の公開定数 (UPPERCASE) を解決済み値として JSON 化可能な dict にする。
+
+    config.toml の有無やキー欠落に関係なく、実際に使われた**実効値**を記録する
+    (toml スナップショット format_conditions より厳密)。numpy 配列は list 化する。
+    """
+    try:
+        from src import config
+        cfg = {}
+        for k in dir(config):
+            if not k.isupper():
+                continue
+            v = getattr(config, k)
+            try:
+                if hasattr(v, "tolist"):        # numpy 配列/スカラ -> list/py スカラ
+                    v = v.tolist()
+                json.dumps(v, ensure_ascii=False)
+                cfg[k] = v
+            except Exception:
+                continue                        # JSON 化できない値はスキップ
+        return cfg
+    except Exception:
+        return {}
+
+
+def _provenance():
+    """成果物に埋め込む来歴 dict (git・版・乱数方式・解決済み config + 指紋)。"""
+    cfg = _resolved_config()
+    fp = hashlib.sha256(
+        json.dumps(cfg, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+    return {
+        "git": _git_info(),
+        "versions": _lib_versions(),
+        "rng": "numpy PCG64 via np.random.default_rng; "
+               "独立サブストリームは np.random.SeedSequence([base, ...]).spawn を使用",
+        "config_fingerprint": fp,
+        "resolved_config": cfg,
+    }
+
+
 def scenario_dir(name):
     """results/<name>/ を作成して絶対パスを返す (シナリオの図・データ・説明の保存先)。"""
     d = os.path.join(RESULTS_DIR, name)
@@ -45,7 +128,8 @@ def write_json(name, payload, meta=None):
     meta    : 追加メタ情報 (seed・設定など)。生成時刻は自動で付与する。
     戻り値  : 保存先パス。
     """
-    record = {"generated_at": _stamp(), "meta": meta or {}, "result": payload}
+    record = {"generated_at": _stamp(), "provenance": _provenance(),
+              "meta": meta or {}, "result": payload}
     path = os.path.join(RESULTS_DIR, name + ".json")
     _ensure_parent(path)
     with open(path, "w", encoding="utf-8") as f:
@@ -133,6 +217,11 @@ _SENSOR_SHORT = {"parent_cam": "親機カメラ", "acoustic1": "音響1点",
 
 # シナリオ -> {使用センサ, 一言概要, 対応 MATH_SPEC}。索引と各 README の「使用センサ」に使う。
 SCENARIO_INFO = {
+    "crlb": {"sensors": ["parent_cam", "acoustic1", "depth"],
+             "one": "統計的検証: 経験RMSE vs CRLB(効率)/NEES(一貫)/GDOPマップ", "spec": "§4.5,§15"},
+    "reliability": {"sensors": ["parent_cam", "acoustic1", "imu", "depth"],
+                    "one": "信頼性掃引: 外れ値故障率(L2 vs Huber)/時間相関/IMUバイアス劣化",
+                    "spec": "§15,§4.4,§8.6,§5.5"},
     "mapping": {"sensors": ["parent_cam", "acoustic1", "imu", "stereo"],
                 "one": "Stage2 軌道推定(IMU) + 子機ステレオでキューブ計測", "spec": "§5,§6.2"},
     "spec": {"sensors": ["parent_cam", "acoustic1", "stereo", "depth"],
@@ -148,13 +237,16 @@ SCENARIO_INFO = {
     "sbl": {"sensors": ["sbl", "imu", "depth"],
             "one": "SBL: 親機4点音響の多辺測量 (光学なし比較手法)", "spec": "§13"},
     "opmap": {"sensors": ["parent_cam", "acoustic1", "imu", "depth"],
-              "one": "濁り×水深の運用可能領域マップ (光学/フォールバック/不可)", "spec": "§9-§12"},
+              "one": "濁り×水深の達成精度マップ (自動切替RMSEを濃淡表示, 現実誤差込み)", "spec": "§9-§12"},
     "switch": {"sensors": ["parent_cam", "acoustic1", "imu", "depth"],
                "one": "光学↔フォールバック自動切替 (プルーム通過)", "spec": "§12"},
     "visualize": {"sensors": ["parent_cam", "acoustic1", "imu", "stereo"],
                   "one": "発表用 可視化シーン集 (Stage1 + Stage2)", "spec": "§1-§6.2"},
     "attitude": {"sensors": ["parent_cam", "acoustic1", "imu_att"],
                  "one": "波で動揺する親機を IMU 姿勢推定し機体角度を補正", "spec": "§14"},
+    "explore": {"sensors": ["parent_cam", "acoustic1", "sbl", "imu", "depth"],
+                "one": "対話探索: 光学/SBL/光学なし の RMSE vs 水深を比較 (スライダ+計算ボタン)",
+                "spec": "§5,§9,§11,§13"},
 }
 
 
@@ -201,7 +293,8 @@ def write_index():
 
 
 def write_report(scenario, title, summary, condition_sections=(),
-                 outputs=(), results=None, meta=None, math_spec=None, sensors=None):
+                 outputs=(), results=None, meta=None, math_spec=None, sensors=None,
+                 not_reflected=()):
     """results/<scenario>/README.md にシナリオ説明を自動生成する。
 
     scenario          : シナリオ名 (results/<scenario>/ に書く)。
@@ -212,6 +305,9 @@ def write_report(scenario, title, summary, condition_sections=(),
     results           : 主な数値結果の dict (任意, 表示用)。
     meta              : seed 等の補足 dict。
     math_spec         : 対応する MATH_SPEC 節 (例 "§9, §12")。
+    not_reflected     : このシナリオが**意図的に反映しない** config 設定の
+                        (設定ラベル, 理由) リスト。設計上反映すべきでない項目
+                        (別系統センサ・制御実験・理想ベースライン等) を README に明記する。
     戻り値            : README.md のパス。
     """
     d = scenario_dir(scenario)
@@ -233,6 +329,21 @@ def write_report(scenario, title, summary, condition_sections=(),
     if sec:
         lines.append(sec)
 
+    prov = _provenance()                        # 再現性: git・版・乱数・config 指紋
+    git = prov["git"]
+    ver = prov["versions"]
+    lines.append("## 再現性 (provenance)")
+    lines.append("")
+    commit = (git["commit"] or "?")[:12]
+    dirty = " (dirty)" if git["dirty"] else ""
+    lines.append(f"- git: `{commit}`{dirty} @ `{git['branch'] or '?'}`")
+    lines.append(f"- versions: Python {ver['python']} / numpy {ver.get('numpy')} "
+                 f"/ scipy {ver.get('scipy')} / matplotlib {ver.get('matplotlib')}")
+    lines.append(f"- platform: {ver['platform']}")
+    lines.append(f"- 乱数: {prov['rng']}")
+    lines.append(f"- config 指紋 (解決済み実効値の sha256): `{prov['config_fingerprint']}`")
+    lines.append("")
+
     if results:
         lines.append("## 主な結果")
         lines.append("")
@@ -249,6 +360,22 @@ def write_report(scenario, title, summary, condition_sections=(),
                      "再実行すると条件が変わる。")
         lines.append("")
         lines.append(format_conditions(list(condition_sections)))
+        lines.append("")
+
+    if not_reflected:
+        lines.append("## config.toml で反映していない設定")
+        lines.append("")
+        lines.append("このシナリオの目的・構成上、以下の `config.toml` 設定は**意図的に反映していない**。"
+                     "(他は反映済み)")
+        lines.append("")
+        lines.append("| 設定 | 反映しない理由 |")
+        lines.append("|---|---|")
+        for item in not_reflected:
+            if isinstance(item, (list, tuple)):
+                label, reason = item[0], (item[1] if len(item) > 1 else "")
+            else:
+                label, reason = item, ""
+            lines.append(f"| {label} | {reason} |")
         lines.append("")
 
     if outputs:

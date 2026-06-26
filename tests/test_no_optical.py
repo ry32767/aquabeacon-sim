@@ -80,3 +80,41 @@ def test_no_optical_close_to_optical():
     r_opt = rmse_xyz(traj, est_opt)["total"]
     r_no = rmse_xyz(traj, est_no)["total"]
     assert r_no < 4.0 * r_opt + 0.05    # 光学なしでも同オーダー (数倍以内)
+
+
+# --- §11.2.1 退化運動と鏡像不定性 / 適応多スタート (EST-05) ---
+def test_straight_line_warns_mirror_ambiguity():
+    """ほぼ直進の水平運動では方位不可観測 -> 警告が出る (MATH_SPEC §11.2.1)。"""
+    import warnings
+    n = 8
+    straight = np.column_stack([np.linspace(0.5, 5.0, n), np.full(n, 0.5),
+                                np.full(n, -9.0)])
+    z = simulate_observation_sequence(straight, SIGMA, seed=3, p_parent=P_PARENT)
+    imu = simulate_imu_displacements(straight, SIGMA_IMU, seed=4)
+    dep = simulate_depth_sequence(straight, SIGMA_DEPTH, seed=5)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        estimate_trajectory_acoustic_inertial(z[:, 0], SIGMA[0], imu, SIGMA_IMU,
+                                              dep, SIGMA_DEPTH, p_parent=P_PARENT)
+    assert any(issubclass(x.category, RuntimeWarning) for x in w), \
+        "直進運動で鏡像不定の警告が出ていない"
+
+
+def test_adaptive_multistart_matches_full_grid_on_rich_motion():
+    """方位リッチな芝刈りでは適応(1スタート)が多スタート結果と一致する (EST-05)。"""
+    import warnings
+    traj = double_lawnmower_trajectory(area=(2.0, 1.5), depth=-9.0, n_legs=2,
+                                       pts_per_leg=4, origin=(0.5, 0.5))
+    z = simulate_observation_sequence(traj, SIGMA, seed=3, p_parent=P_PARENT)
+    imu = simulate_imu_displacements(traj, SIGMA_IMU, seed=4)
+    dep = simulate_depth_sequence(traj, SIGMA_DEPTH, seed=5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        e_auto = estimate_trajectory_acoustic_inertial(z[:, 0], SIGMA[0], imu,
+                                                       SIGMA_IMU, dep, SIGMA_DEPTH,
+                                                       p_parent=P_PARENT)
+        e_grid = estimate_trajectory_acoustic_inertial(z[:, 0], SIGMA[0], imu,
+                                                       SIGMA_IMU, dep, SIGMA_DEPTH,
+                                                       p_parent=P_PARENT,
+                                                       n_azimuth_starts=12)
+    assert np.allclose(e_auto, e_grid, atol=1e-6)

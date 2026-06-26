@@ -1,0 +1,22 @@
+{
+  "description": "AquaBeacon 論文の中核数値ピン (CRLB/効率/一貫性/理想測位RMSE)",
+  "truth_xyz": [
+    6.0,
+    8.0,
+    -7.5
+  ],
+  "sigma": [
+    0.03,
+    0.005235987755982988,
+    0.005235987755982988
+  ],
+  "config_fingerprint": "71edff32bd25d1ff",
+  "git_commit": "af3d71e4f3177f1068e3ca19dc510b6200b1ee27",
+  "metrics": {
+    "crlb_total_mm": 89.0238,
+    "crlb_total_with_depth_mm": 75.9127,
+    "mc_rmse_total_mm": 89.0162,
+    "efficiency_rmse_over_crlb": 0.9999,
+    "nees_mean_dof3": 2.9946
+  }
+}

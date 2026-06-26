@@ -22,11 +22,12 @@ from _plotstyle import plt, USE_JP, JP_FONT, Lbl
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import (SIGMA, SIGMA_IMU, SIGMA_DEPTH, P_PARENT, SEED,
-                        SWITCH_DROPOUT_THRESHOLD, SWITCH_HYSTERESIS)
+from src.config import (SIGMA, SIGMA_IMU, SIGMA_DEPTH, DEPTH_BIAS, P_PARENT, SEED,
+                        SWITCH_DROPOUT_THRESHOLD, SWITCH_HYSTERESIS,
+                        SURVEY_AREA, SURVEY_ORIGIN)
 from src.truth import double_lawnmower_trajectory
 from src.sensors import (simulate_observation_sequence, simulate_imu_displacements,
-                         simulate_depth_sequence)
+                         simulate_depth_sequence, apply_attitude_error_config)
 from src.estimator import (estimate_trajectory, estimate_trajectory_auto,
                            estimate_trajectory_acoustic_inertial)
 from src.evaluation import rmse_xyz
@@ -35,14 +36,20 @@ from src.results_io import write_json, write_csv, scenario_dir, write_report
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIGDIR = scenario_dir("switch")
 
+# 本シナリオは光学↔フォールバック自動切替**ロジック**の制御デモ (所定のプルーム区間で
+# 決定的にブラックアウト)。§8 の系統誤差・外れ値は重ねない (切替ロジックの可視化を明快に保つ;
+# フォールバック区間 §11 は外れ値に脆い)。現実誤差込みの評価は run_spec/deepwater。
+# 幾何は config [survey] の near-nadir (子機はほぼ親機直下)。
+
 
 def build_scenario(seed=SEED):
-    traj = double_lawnmower_trajectory(area=(8.0, 5.0), depth=-9.0,
-                                       n_legs=3, pts_per_leg=9, origin=(3.0, 3.0))
+    traj = double_lawnmower_trajectory(area=SURVEY_AREA, depth=-9.0,
+                                       n_legs=3, pts_per_leg=9, origin=SURVEY_ORIGIN)
     n = len(traj)
     z = simulate_observation_sequence(traj, SIGMA, seed=seed, p_parent=P_PARENT)
+    z = apply_attitude_error_config(z, seed=seed)        # §14 波動揺 (config [attitude].as_error。既定 OFF)
     imu = simulate_imu_displacements(traj, SIGMA_IMU, seed=seed + 1)
-    dep = simulate_depth_sequence(traj, SIGMA_DEPTH, seed=seed + 2)
+    dep = simulate_depth_sequence(traj, SIGMA_DEPTH, seed=seed + 2, bias=DEPTH_BIAS)
     # 濁りプルーム通過: 中央の連続区間でビーコン見失い
     det = np.ones(n, bool)
     a, b = int(n * 0.38), int(n * 0.72)
@@ -149,7 +156,23 @@ def main(seed=SEED):
         "想定する。自動切替 (見失い率+ヒステリシスの状態機械, §12) が、光学が健全な区間は光学\n"
         "(距離+方位+仰角)、見失い区間は距離+IMU+深度 (§11) を選び、ブラックアウトでも軌道を保つ。\n"
         "素朴な光学維持 (見失いの誤検出を使う) / 常時フォールバック / 自動切替 を比較する。",
-        condition_sections=["noise", "switch", "depth", "trajectory"],
+        condition_sections=["survey", "noise", "switch", "depth", "attitude"],
+        not_reflected=[
+            ("`[error_model]`/`[acoustic]`/`[sync]`",
+             "自動切替**ロジック**の制御デモ (所定区間で決定的にブラックアウト)。§8 の系統誤差・"
+             "ランダム外れ値を重ねると切替判定の可視化が濁り、フォールバック区間 (§11) も脆くなるため"
+             "反映しない。現実誤差込みの測位評価は `run_spec`/`run_deepwater`。"),
+            ("`[switch] snr_margin`",
+             "切替は見失い率と `dropout_threshold`+`hysteresis` の状態機械で判定する。"
+             "`snr_margin` は参考値で本実装では未使用 (config の注記どおり)。"),
+            ("`[trajectory]`",
+             "幾何は config `[survey]` の near-nadir 箱 (固定 depth=-9m, 3レグ×9点)。"
+             "標準のダブル芝刈り軌道 (`[trajectory]`) は使わない (`run_mapping` 参照)。"),
+            ("`[optical]` (減衰σ/p_drop)",
+             "見失いは optical_model の確率ではなく、明示した中央区間で**決定的に**起こす"
+             "(切替判定の可視化を明快にする)。見失い角度は固定範囲の一様外れ値で表す。"),
+            ("`[sbl]`/`[stereo]`/`[attitude]`", "SBL・ステレオ・親機姿勢は使わない (別シナリオ)。"),
+        ],
         outputs=[("auto_switch.png", "モード色分け軌道/フレーム別誤差/検出と切替の時系列"),
                  ("run_switch.json", "各手法のRMSEと切替情報"),
                  ("run_switch.csv", "手法別 RMSE")],

@@ -19,7 +19,8 @@ from src.attitude import (euler_to_matrix, matrix_to_euler, exp_so3, log_so3,
 from src.sensors import (forward_observation, relative_vector,
                          simulate_observation, simulate_observation_attitude,
                          simulate_observation_sequence_attitude,
-                         simulate_observation_sequence, simulate_imu_signals)
+                         simulate_observation_sequence, simulate_imu_signals,
+                         apply_attitude_error)
 from src.truth import wave_attitude_sequence, double_lawnmower_trajectory
 from src.estimator import estimate_trajectory
 from src.evaluation import rmse_xyz
@@ -229,3 +230,43 @@ def test_backward_compat_identity_attitude():
     assert np.allclose(z_body[:, 1:], z_plain[:, 1:], atol=1e-12)
     z_world = correct_observation_sequence(z_body, R_I)
     assert np.allclose(z_world, z_body, atol=1e-12)
+
+
+# ----------------------------------------------------------------------------
+# 波動揺を「観測誤差」として重ねる合成ヘルパ (apply_attitude_error, §8/§14)
+# ----------------------------------------------------------------------------
+def test_attitude_error_disabled_is_identity():
+    # enable=False なら観測をそのまま返す (全シナリオの既定 = 従来と完全一致)。
+    traj = double_lawnmower_trajectory()
+    sigma = (0.03, np.deg2rad(0.3), np.deg2rad(0.3))
+    z = simulate_observation_sequence(traj, sigma, seed=0)
+    assert np.allclose(apply_attitude_error(z, seed=0, enable=False), z, atol=0.0)
+
+
+def test_attitude_error_single_observation_shape():
+    # 単一観測 (3,) を入れたら (3,) で返る (静止点シナリオ用、n=1 で補正も落ちない)。
+    z = np.array([10.0, 0.3, -0.9])
+    out_naive = apply_attitude_error(z, seed=1, enable=True, imu_correct=False)
+    out_corr = apply_attitude_error(z, seed=1, enable=True, imu_correct=True)
+    assert out_naive.shape == (3,) and out_corr.shape == (3,)
+    assert np.isclose(out_naive[0], z[0]) and np.isclose(out_corr[0], z[0])  # 距離は回転不変
+
+
+def test_attitude_error_naive_degrades_corrected_recovers():
+    # 波動揺ありで naive は劣化し、IMU 補正で baseline 付近へ回復する (§14 の効果)。
+    traj = double_lawnmower_trajectory()
+    sigma = (0.03, np.deg2rad(0.3), np.deg2rad(0.3))
+    wave = {"roll_amp": np.deg2rad(5.0), "pitch_amp": np.deg2rad(4.0),
+            "yaw_amp": np.deg2rad(3.0)}
+    imu = {"gyro_sigma": np.deg2rad(0.1), "acc_sigma": 0.05, "mag_sigma": 0.02}
+    z = simulate_observation_sequence(traj, sigma, seed=0)
+    z_naive = apply_attitude_error(z, seed=0, enable=True, imu_correct=False,
+                                   wave=wave, dt=0.02)
+    z_corr = apply_attitude_error(z, seed=0, enable=True, imu_correct=True,
+                                  wave=wave, dt=0.02, filter_alpha=0.98, **imu)
+    rb = rmse_xyz(traj, estimate_trajectory(z, sigma))["total"]
+    rn = rmse_xyz(traj, estimate_trajectory(z_naive, sigma))["total"]
+    rc = rmse_xyz(traj, estimate_trajectory(z_corr, sigma))["total"]
+    assert rn > rb                 # naive は baseline より悪化
+    assert rc < rn                 # 補正は naive を改善
+    assert rc < 3.0 * rb           # baseline の数倍以内まで回復

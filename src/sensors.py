@@ -74,13 +74,24 @@ def simulate_observation(p_child, sigma, seed, p_parent=None,
 
 
 def simulate_observation_sequence(trajectory, sigma, seed, p_parent=None,
-                                  observe_from_parent=True):
+                                  observe_from_parent=True, rho=0.0):
     """軌道 (n,3) の各時刻にノイズ付き観測を生成して (n,3) で返す (Stage 2)。
 
     各時刻 k には seed+k を使い、独立かつ再現可能なノイズを与える。
+    rho>0 (スカラ or (3,)) なら時間相関ノイズ (1次ガウス・マルコフ, §8.6) を与える。
+    既定 rho=0 では従来の白色・per-step seed と完全一致 (後方互換)。
     """
     trajectory = np.asarray(trajectory, dtype=float)
-    z = np.empty_like(trajectory)
+    rho_arr = np.broadcast_to(np.asarray(rho, dtype=float), (3,))
+    if np.any(rho_arr != 0.0):                   # 時間相関ノイズ (§8.6): 単一連続ストリーム
+        z = np.empty_like(trajectory)
+        e = gauss_markov_sequence(len(trajectory), np.asarray(sigma, dtype=float),
+                                  rho_arr, seed=seed, per_step_shape=(3,))
+        for k, p in enumerate(trajectory):
+            v = relative_vector(p, p_parent, observe_from_parent)
+            z[k] = forward_observation(v) + e[k]
+        return z
+    z = np.empty_like(trajectory)                # 白色 (従来パス, 後方互換)
     for k, p in enumerate(trajectory):
         z[k] = simulate_observation(p, sigma, seed=seed + k, p_parent=p_parent,
                                     observe_from_parent=observe_from_parent)
@@ -111,6 +122,54 @@ def effective_sigma(d, sigma, range_growth_per_m=0.0, dist_growth_per_m=0.0):
     fa = 1.0 + range_growth_per_m * d
     fd = 1.0 + dist_growth_per_m * d
     return np.array([sd * fd, saz * fa, sel * fa])
+
+
+def effective_sound_speed(c0, gradient_per_s, z_child, z_parent=0.0):
+    """直線スラント経路の飛行時間に効く実効音速 [m/s] (SVP1次近似, MATH_SPEC §8.4b)。
+
+    深さ方向に線形な音速プロファイル c(z)=c0+gradient·z (z は上向き, 子機は z<0) のとき、
+    親機 (z_parent=0) から子機 (z_child) への直線経路に沿った飛行時間 TOF=∫ds/c は
+    対数平均音速 c_eff=(c_child-c0)/ln(c_child/c0) で表せる。測距は d_meas=d_true·c_assumed/c_eff
+    になる (既存 §8.4 の定数スケールを経路依存に一般化した追加項)。gradient=0 で c_eff=c0
+    (従来と完全一致)。near-nadir では経路がほぼ鉛直で効果は小さい (ray bending は2次で無視)。
+    """
+    if gradient_per_s == 0.0 or z_child == z_parent:
+        return c0
+    c_child = c0 + gradient_per_s * (z_child - z_parent)
+    if c_child <= 0.0 or c0 <= 0.0:              # 非物理ガード
+        return c0
+    return (c_child - c0) / np.log(c_child / c0)
+
+
+def gauss_markov_sequence(n, sigma, rho, seed=None, per_step_shape=(), rng=None):
+    """定常 1次ガウス・マルコフ (AR(1)) ノイズ列を返す (MATH_SPEC §8.6)。
+
+        e_0 = sigma · w_0,   e_k = rho · e_{k-1} + sqrt(1-rho²) · sigma · w_k,   w ~ N(0,1)
+
+    定常なので周辺分散は sigma² (全時刻一定)、lag-1 自己相関は rho。rho=0 で白色 N(0,sigma)。
+    実機の光学重心追跡・音響測距の誤差は時間相関を持つ (rho>0) ので、白色のみだと平滑化/IMU
+    融合の利得を過大評価する。これはその相関を理想 (白色) に重ねるための基本生成器。
+
+    n            : 時刻数
+    sigma        : 標準偏差 (スカラ or per_step_shape にブロードキャスト可)
+    rho          : lag-1 自己相関 [0,1) (スカラ or per_step_shape)
+    per_step_shape: 1時刻あたりの成分形状。観測 (3,) / 深度 () / SBL (M,)。
+    rng          : 与えれば単一連続ストリームを使う (独立サブストリーム化, §15.2)。
+                   None なら default_rng(seed)。
+    戻り値       : (n,)+per_step_shape の相関ノイズ列。
+    """
+    if rng is None:
+        rng = np.random.default_rng(seed)
+    rho = np.asarray(rho, dtype=float)
+    sigma = np.asarray(sigma, dtype=float)
+    shape = (n,) + tuple(per_step_shape)
+    w = rng.standard_normal(shape)
+    e = np.empty(shape)
+    e[0] = w[0]                                  # 定常開始 (分散1)
+    s = np.sqrt(1.0 - rho**2)
+    for k in range(1, n):
+        e[k] = rho * e[k - 1] + s * w[k]
+    return e * sigma
 
 
 # ----------------------------------------------------------------------------
@@ -193,6 +252,7 @@ def simulate_observation_realistic(p_child, sigma, seed, p_parent=None,
                                    sound_speed_true=1500.0,
                                    sound_speed_assumed=1500.0,
                                    acoustic_latency_s=0.0,
+                                   svp_gradient_per_s=0.0,
                                    velocity=None,
                                    optical_model=None):
     """現実的な誤差を含むノイズ付き観測 (d, theta, phi) を生成する (MATH_SPEC §8)。
@@ -225,8 +285,11 @@ def simulate_observation_realistic(p_child, sigma, seed, p_parent=None,
     v_aco = relative_vector(p_acoustic, p_parent, observe_from_parent)
     d_true = np.linalg.norm(v_aco)
 
-    # --- 音速ズレ: 測距は飛行時間×仮定音速 = d_true * c_assumed/c_true (§8.4) ---
-    d_meas = d_true * (sound_speed_assumed / sound_speed_true)
+    # --- 音速ズレ: 測距は飛行時間×仮定音速 = d_true * c_assumed/c_eff (§8.4, §8.4b) ---
+    # SVP (深さ線形プロファイル) があれば実効音速で c_true を置換 (gradient=0 で従来一致)
+    c_eff = effective_sound_speed(sound_speed_true, svp_gradient_per_s,
+                                  float(p_acoustic[2]), float(np.asarray(p_parent)[2]))
+    d_meas = d_true * (sound_speed_assumed / c_eff)
 
     z = np.array([d_meas, theta_true, phi_true]) + np.asarray(bias, dtype=float)
 
@@ -357,23 +420,39 @@ def simulate_depth(p_child, sigma_depth, seed, bias=0.0):
     return -z + bias + rng.normal(0.0, sigma_depth)
 
 
-def simulate_depth_sequence(trajectory, sigma_depth, seed, bias=0.0):
+def simulate_depth_sequence(trajectory, sigma_depth, seed, bias=0.0, rho=0.0):
     """軌道 (n,3) の各時刻に深度観測を生成して (n,) で返す (MATH_SPEC §10)。
 
     各時刻 k に seed+k を使い、独立かつ再現可能なノイズを与える。
+    rho>0 なら時間相関ノイズ (§8.6)。既定 rho=0 で従来の白色と完全一致 (後方互換)。
     """
     trajectory = np.asarray(trajectory, dtype=float)
-    out = np.empty(len(trajectory))
+    if rho != 0.0:                               # 時間相関 (§8.6): 単一連続ストリーム
+        z = np.asarray(trajectory, dtype=float)[:, 2]
+        e = gauss_markov_sequence(len(trajectory), sigma_depth, rho, seed=seed)
+        return -z + bias + e
+    out = np.empty(len(trajectory))              # 白色 (従来パス, 後方互換)
     for k, p in enumerate(trajectory):
         out[k] = simulate_depth(p, sigma_depth, seed=seed + k, bias=bias)
     return out
 
 
-def simulate_sbl_ranges(p_child, anchors, sigma_range, seed):
+def simulate_sbl_ranges(p_child, anchors, sigma_range, seed, *,
+                        sound_speed_true=1500.0, sound_speed_assumed=1500.0,
+                        bias_dist=0.0, dist_growth_per_m=0.0,
+                        outlier_rate=0.0, outlier_scale=20.0,
+                        svp_gradient_per_s=0.0):
     """SBL: 親機の複数トランスデューサ (既知配置 anchors) への距離観測を返す (MATH_SPEC §13)。
 
     各トランスデューサ i が子機までの距離 d_i = ||p_child - anchor_i|| を測る (音響飛行時間)。
     4点以上の既知配置への距離 → 多辺測量で光学なしに3D位置が定まる。
+
+    SBL も音響測距なので、§8 の音響誤差を**理想に重ねる追加項**として反映できる
+    (既定はすべて理想で、従来の純ガウスと完全一致 = 後方互換):
+      §8.4 音速ズレ : d_meas = d_true * (c_assumed / c_true)   (距離の系統スケール)
+      §8.1 バイアス : + bias_dist                              (取付・校正残差)
+      §8.2 距離依存 : σ_eff = σ_range * (1 + dist_growth_per_m * d_true)
+      §8.3 外れ値   : 各アンカー独立に確率 outlier_rate で大誤差 (音響マルチパス)
 
     p_child     : 真の子機位置 [m] (3,)
     anchors     : (M,3) トランスデューサの既知位置 [m]
@@ -385,19 +464,51 @@ def simulate_sbl_ranges(p_child, anchors, sigma_range, seed):
     anchors = np.asarray(anchors, dtype=float)
     rng = np.random.default_rng(seed)
     d_true = np.linalg.norm(anchors - p_child, axis=1)
-    return d_true + rng.normal(0.0, sigma_range, size=len(anchors))
+    # §8.4 音速ズレ (距離スケール) + §8.4b SVP実効音速 + §8.1 系統バイアス
+    c_eff = effective_sound_speed(sound_speed_true, svp_gradient_per_s,
+                                  float(p_child[2]), float(anchors[..., 2].mean()))
+    d_meas = d_true * (sound_speed_assumed / c_eff) + bias_dist
+    # §8.2 距離依存ノイズ (遠いほど悪化)
+    sigma_eff = sigma_range * (1.0 + dist_growth_per_m * d_true)
+    ranges = d_meas + rng.normal(0.0, sigma_eff)
+    # §8.3 外れ値 (音響マルチパス): 各アンカーが独立に跳ねる
+    if outlier_rate > 0.0:
+        for i in range(len(ranges)):
+            if rng.random() < outlier_rate:
+                ranges[i] += rng.normal(0.0, outlier_scale * sigma_eff[i])
+    return ranges
 
 
-def simulate_sbl_range_sequence(trajectory, anchors, sigma_range, seed):
+def simulate_sbl_range_sequence(trajectory, anchors, sigma_range, seed, rho=0.0,
+                                **error):
     """軌道 (n,3) の各時刻に SBL 距離観測を生成して (n,M) で返す (MATH_SPEC §13)。
 
-    各時刻 k に seed+k を使い、独立かつ再現可能なノイズを与える。
+    各時刻 k に seed+k を使い、独立かつ再現可能なノイズを与える。error は
+    simulate_sbl_ranges の音響誤差キーワード (§8: sound_speed_*, bias_dist,
+    dist_growth_per_m, outlier_rate, outlier_scale, svp_gradient_per_s)。既定は理想で従来と一致。
+    rho>0 なら測距ノイズに時間相関 (§8.6) を与える (各アンカー独立に時間相関)。
+    既定 rho=0 で従来の白色と完全一致 (後方互換)。
+
+    anchors は (M,3) 固定配置のほか、(n,M,3) の**時刻ごとに動くアンカー列**も受ける
+    (親機の波動揺でアレイが回る §13.5/§14 など)。後者は各時刻 k に anchors[k] を使う。
     """
     trajectory = np.asarray(trajectory, dtype=float)
     anchors = np.asarray(anchors, dtype=float)
-    out = np.empty((len(trajectory), len(anchors)))
+    per_step = anchors.ndim == 3              # (n,M,3): 時刻ごとに動くアンカー (波動揺など)
+    n, m = len(trajectory), anchors.shape[-2]
+    if rho != 0.0:                            # 時間相関 (§8.6): クリーン距離 + 単一連続ストリーム
+        clean_error = {**error, "outlier_rate": 0.0}    # 外れ値は本質的に白色なので相関路から除く
+        out = np.empty((n, m))
+        for k, p in enumerate(trajectory):
+            a_k = anchors[k] if per_step else anchors
+            out[k] = simulate_sbl_ranges(p, a_k, 0.0, seed=seed + k, **clean_error)
+        e = gauss_markov_sequence(n, sigma_range, rho, seed=seed + 99991,
+                                  per_step_shape=(m,))
+        return out + e
+    out = np.empty((n, m))                    # 白色 (従来パス, 後方互換)
     for k, p in enumerate(trajectory):
-        out[k] = simulate_sbl_ranges(p, anchors, sigma_range, seed=seed + k)
+        a_k = anchors[k] if per_step else anchors
+        out[k] = simulate_sbl_ranges(p, a_k, sigma_range, seed=seed + k, **error)
     return out
 
 
@@ -493,19 +604,181 @@ def simulate_imu_signals(R_seq, dt, seed, gyro_sigma=0.0, gyro_bias=0.0,
     return {"gyro": gyro, "acc": acc, "mag": mag}
 
 
-def simulate_imu_displacements(trajectory, sigma_imu, seed):
-    """IMU pre-integration による時刻間変位 delta_p の擬似観測を返す (n-1, 3) [m]  (MATH_SPEC §5)。
+def simulate_imu_displacements(trajectory, sigma_imu, seed, sigma_bias=0.0,
+                               bias0=0.0):
+    """IMU pre-integration による時刻間変位 delta_p の擬似観測を返す (n-1, 3) [m]  (MATH_SPEC §5, §5.5)。
 
-    真の変位 (p_{k+1} - p_k) に正規ノイズ N(0, sigma_imu) を加えたもの。
-    IMU 加速度の二重積分による予測変位の代理モデル (簡易版)。seed で再現可能。
+    真の変位 (p_{k+1} - p_k) に白色ノイズ N(0, sigma_imu) を加える。実機の strapdown
+    pre-integration はさらに**緩やかに変動するバイアス** (加速度計バイアス・スケール誤差) に
+    支配されるので、それを**追加項**として重ねられる (§5.5):
+
+        delta_meas_k = (p_{k+1}-p_k) + e_k + b_k
+        e_k = N(0, sigma_imu)                        (白色, 従来項)
+        b_k = b_{k-1} + N(0, sigma_bias),  b_0 = bias0  (バイアスのランダムウォーク)
+
+    sigma_bias=0 かつ bias0=0 (既定) では b_k=0 で従来と**完全一致** (白色ノイズ e_k の
+    乱数引きを先に行い byte 一致を保つ)。バイアスありで光学なし/SBL フォールバックの
+    精度が現実的に劣化する (白色のみは IMU 拘束を過大評価する)。
 
     trajectory: (n,3) 真の子機軌道
-    sigma_imu : スカラ or (3,) の変位ノイズ標準偏差 [m]
+    sigma_imu : スカラ or (3,) の変位白色ノイズ標準偏差 [m]
+    sigma_bias: バイアスのランダムウォーク 1ステップ標準偏差 [m] (スカラ or (3,))。既定0。
+    bias0     : 初期バイアス [m] (スカラ or (3,))。既定0。
     戻り値    : delta_meas (n-1, 3)
     """
     trajectory = np.asarray(trajectory, dtype=float)
     true_delta = np.diff(trajectory, axis=0)        # (n-1, 3)
     sigma_imu = np.broadcast_to(np.asarray(sigma_imu, dtype=float), (3,))
     rng = np.random.default_rng(seed)
-    noise = rng.normal(0.0, sigma_imu, size=true_delta.shape)
-    return true_delta + noise
+    noise = rng.normal(0.0, sigma_imu, size=true_delta.shape)   # 白色 e_k (従来と同一の引き)
+    out = true_delta + noise
+    sigma_bias_v = np.broadcast_to(np.asarray(sigma_bias, dtype=float), (3,))
+    if np.any(sigma_bias_v != 0.0) or np.any(np.asarray(bias0, dtype=float) != 0.0):
+        steps = rng.normal(0.0, sigma_bias_v, size=true_delta.shape)  # 追加乱数 (既定では未消費)
+        steps[0] = 0.0                          # b_0 = bias0 (初回はウォークなし, §5.5)
+        walk = np.cumsum(steps, axis=0) + np.asarray(bias0, dtype=float)
+        out = out + walk
+    return out
+
+
+# ----------------------------------------------------------------------------
+# 波による親機動揺を「観測誤差」として既存のワールド角度観測に重ねる (MATH_SPEC §8/§14)
+#
+# 親機は水上で波により動揺する。機体固定カメラの角度は機体フレームの値になるので、姿勢を
+# 無視すると位置に系統誤差 (特に yaw->方位角) が乗る。run_attitude (§14) はこれを生成時に
+# 機体フレームで作るが、ここでは**既に作ったワールド角度観測 z を後処理で機体フレームへ回し**、
+# 任意で IMU 相補フィルタの推定姿勢で補正して返す合成可能なヘルパを用意する。これにより各
+# シナリオは観測生成の直後に 1 行差し込むだけで「波動揺の誤差」を反映できる (距離は回転不変)。
+#
+# enable=False (既定) では z をそのまま返す = 従来結果と完全一致 (後方互換)。
+# 注: 後処理なので「回転→ノイズ」ではなく「ノイズ→回転」になる近似だが、誤差モデルとして
+#     動揺の影響を見るには十分。生成時厳密版が要る §14 専用は run_attitude を使う。
+# ----------------------------------------------------------------------------
+def apply_attitude_error(z_world_seq, seed, *, enable, imu_correct=True, wave=None,
+                         dt=None, gyro_sigma=0.0, gyro_bias=0.0, acc_sigma=0.0,
+                         mag_sigma=0.0, gravity=9.80665, filter_alpha=0.98):
+    """ワールド角度観測列 (n,3) に波動揺の誤差を重ねて返す (MATH_SPEC §8/§14)。
+
+    z_world_seq : (n,3) 既存のワールド観測 (d, az_W, el_W)。距離 d は姿勢に不感。
+    enable      : False なら何もしない (z をそのまま返す = 従来と一致)。
+    imu_correct : True なら親機 IMU (ジャイロ+加速度+磁気) の相補フィルタ姿勢で機体角度を
+                  ワールドへ補正 (姿勢推定の残差ぶんだけ誤差が残る)。False なら naive
+                  (機体角度をワールドと誤認 -> 姿勢ぶんの系統誤差が丸ごと残る)。
+    wave        : wave_attitude_sequence のキーワード (roll_amp 等 [rad]/[s])。None で config。
+    dt          : サンプル間隔 [s] (None で config.ATT_DT)。軌道点を時刻列とみなす。
+    gyro_*/acc_*/mag_*/gravity/filter_alpha : IMU 生信号と相補フィルタの設定 (imu_correct 時)。
+    戻り値      : (n,3) 補正後 (または naive) のワールド観測。
+    truth (親機姿勢 R_true) は本ヘルパ内で生成するが、補正に使う姿勢は IMU からの R_est であり
+    推定 (estimator) には truth を渡さない (MBD 分離は保たれる)。
+
+    **注意 (角度誤差統計の妥当性)**: 本ヘルパは「ワールド角度にノイズ→機体へ回転」の後処理
+    近似 (NUM-01)。near-nadir (仰角→-90°) では機体方位ノイズ共分散が回転不変でないため、
+    この経路の**方位/仰角の誤差統計は不正確**になりうる (位置 RMSE への影響は小)。波動揺の
+    角度レベルの誤差・naive vs 補正の角度比較は、生成時に機体フレームでノイズを乗せる厳密経路
+    (simulate_observation_attitude / run_attitude.py, §14) を使うこと。本ヘルパは位置レベルの
+    感度を手早く見る用途に留める。既定 enable=False では何も変えない (後方互換)。
+    """
+    z = np.asarray(z_world_seq, dtype=float)
+    if not enable:
+        return z
+    one = (z.ndim == 1)              # 単一観測 (3,) も受ける (静止点シナリオ用)。n=1 として処理。
+    if one:
+        z = z[None, :]
+    from src.truth import wave_attitude_sequence              # 親機姿勢の真値 (§14.1)
+    from src.attitude import (euler_to_matrix, complementary_filter,
+                              correct_observation_sequence, body_bearing_to_world)
+    if dt is None:
+        from src.config import ATT_DT
+        dt = ATT_DT
+    n = len(z)
+    e_true = wave_attitude_sequence(n, dt=dt, seed=seed + 700, **(wave or {}))
+    R_true = np.array([euler_to_matrix(*ev) for ev in e_true])
+    # ワールド角度 -> 機体角度 (親機が R だけ回ると、ワールド方向は機体では R^T だけ回って見える)
+    z_body = np.array([body_bearing_to_world(z[k], R_true[k].T) for k in range(n)])
+    if not imu_correct:
+        out = z_body                                           # naive: 補正しない
+    else:
+        sig = simulate_imu_signals(R_true, dt=dt, seed=seed + 800, gyro_sigma=gyro_sigma,
+                                   gyro_bias=gyro_bias, acc_sigma=acc_sigma,
+                                   mag_sigma=mag_sigma, gravity=gravity)
+        R_est = complementary_filter(sig["gyro"], sig["acc"], sig["mag"], dt=dt,
+                                     alpha=filter_alpha)
+        out = correct_observation_sequence(z_body, R_est)      # IMU推定姿勢でワールドへ補正
+    return out[0] if one else out
+
+
+def apply_attitude_error_config(z_world_seq, seed):
+    """config [attitude] の設定で apply_attitude_error を呼ぶ薄いラッパ (各シナリオ用)。
+
+    [attitude].as_error=False (既定) では z をそのまま返す = 全シナリオで従来結果と一致。
+    True にすると wave/IMU パラメータと imu_correct を config から読んで波動揺誤差を重ねる。
+    """
+    from src import config
+    return apply_attitude_error(
+        z_world_seq, seed, enable=config.ATT_AS_ERROR, imu_correct=config.ATT_IMU_CORRECT,
+        wave=config.ATT_WAVE, dt=config.ATT_DT, filter_alpha=config.ATT_FILTER_ALPHA,
+        **config.ATT_IMU_KW)
+
+
+# ----------------------------------------------------------------------------
+# 波による親機動揺を SBL アンカーアレイの回転として反映する (MATH_SPEC §13.5/§14)
+#
+# SBL の4トランスデューサは親機ピボット (p_parent) から**オフセット**して付くので、親機が波で
+# 姿勢 R(t) に揺れるとアレイ全体がワールドで回り、各レンジ d_i=||p_child - A_i(t)|| が変わる。
+# (単一距離フォールバック §11 はピボット上の1点なので回転不変 = 波動揺に不感。SBL はオフセット
+#  ぶん不感ではない、という非対称がここの肝。)
+#
+# 本ヘルパは「真値レンジ生成に使う真の回転アンカー列」と「推定が使うアンカー」を返す:
+#   - imu_correct=False (naive): 推定は公称(level)アンカーのまま → 波動揺の系統誤差が丸ごと残る
+#   - imu_correct=True         : 親機 IMU 相補フィルタの推定姿勢 R_est でアンカーを回す
+#                                → 姿勢推定残差ぶんだけ誤差が残る (apply_attitude_error と対称)
+# enable=False (既定) では (anchors, anchors) を返す = 従来結果と完全一致 (後方互換)。
+# truth (R_true) は本ヘルパ内のみで使い、estimator には R_est 由来のアンカーしか渡さない
+# (MBD 分離は保たれる)。
+# ----------------------------------------------------------------------------
+def sbl_attitude_anchors(anchors, n, seed, *, enable, imu_correct=True, wave=None,
+                         dt=None, p_parent=None, gyro_sigma=0.0, gyro_bias=0.0,
+                         acc_sigma=0.0, mag_sigma=0.0, gravity=9.80665, filter_alpha=0.98):
+    """親機の波動揺で回る SBL アンカー列を返す (MATH_SPEC §13.5/§14)。
+
+    anchors : (M,3) 公称 (level) のアンカー配置 [m]。
+    n       : 時刻数 (軌道点数)。
+    戻り値  : (anchors_true (n,M,3), anchors_est ((M,3) naive / (n,M,3) imu_correct))
+              anchors_true は simulate_sbl_range_sequence に渡す**真値**アンカー、
+              anchors_est は estimate_trajectory_sbl に渡す推定側アンカー。
+    enable=False なら (anchors, anchors) を返す = 従来一致。
+    """
+    anchors = np.asarray(anchors, dtype=float)
+    if not enable:
+        return anchors, anchors
+    p_parent = np.zeros(3) if p_parent is None else np.asarray(p_parent, dtype=float)
+    from src.truth import wave_attitude_sequence              # 親機姿勢の真値 (§14.1)
+    from src.attitude import euler_to_matrix, complementary_filter
+    if dt is None:
+        from src.config import ATT_DT
+        dt = ATT_DT
+    off = anchors - p_parent                                  # 機体フレームのアンカーオフセット
+    e_true = wave_attitude_sequence(n, dt=dt, seed=seed + 700, **(wave or {}))
+    R_true = np.array([euler_to_matrix(*ev) for ev in e_true])
+    anchors_true = p_parent + np.einsum("kij,mj->kmi", R_true, off)   # (n,M,3) 波で回った真アンカー
+    if not imu_correct:
+        return anchors_true, anchors                          # naive: 推定は公称(level)アンカー
+    sig = simulate_imu_signals(R_true, dt=dt, seed=seed + 800, gyro_sigma=gyro_sigma,
+                               gyro_bias=gyro_bias, acc_sigma=acc_sigma,
+                               mag_sigma=mag_sigma, gravity=gravity)
+    R_est = complementary_filter(sig["gyro"], sig["acc"], sig["mag"], dt=dt, alpha=filter_alpha)
+    anchors_est = p_parent + np.einsum("kij,mj->kmi", R_est, off)     # IMU推定姿勢で回したアンカー
+    return anchors_true, anchors_est
+
+
+def sbl_attitude_anchors_config(anchors, n, seed, p_parent=None):
+    """config [attitude] の設定で sbl_attitude_anchors を呼ぶ薄いラッパ (SBL シナリオ用)。
+
+    [attitude].as_error=False (既定) では (anchors, anchors) を返す = 従来結果と一致。
+    True にすると wave/IMU パラメータと imu_correct を config から読み、波動揺で回るアンカーを返す。
+    """
+    from src import config
+    return sbl_attitude_anchors(
+        anchors, n, seed, enable=config.ATT_AS_ERROR, imu_correct=config.ATT_IMU_CORRECT,
+        wave=config.ATT_WAVE, dt=config.ATT_DT, p_parent=p_parent,
+        filter_alpha=config.ATT_FILTER_ALPHA, **config.ATT_IMU_KW)

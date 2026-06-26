@@ -111,8 +111,20 @@ ERROR_MODEL = {
     "outlier_scale": float(_get("error_model", "outlier_scale", 20.0)),
     "sound_speed_true": float(_get("acoustic", "sound_speed_true", 1500.0)),
     "sound_speed_assumed": float(_get("acoustic", "sound_speed_assumed", 1500.0)),
+    "svp_gradient_per_s": float(_get("acoustic", "svp_gradient_per_s", 0.0)),
     "acoustic_latency_s": float(_get("sync", "acoustic_latency_s", 0.0)),
 }
+
+# 時間相関ノイズ (1次ガウス・マルコフ, MATH_SPEC §8.6)。lag-1 自己相関 [0,1)。
+# 既定 0 で白色 (従来と完全一致)。実機の光学/音響誤差の時間相関を模す。
+NOISE_RHO_DIST = float(_get("error_model", "rho_dist", 0.0))     # 距離測定の時間相関
+NOISE_RHO_ANG = float(_get("error_model", "rho_ang", 0.0))       # 方位/仰角の時間相関
+NOISE_RHO = (NOISE_RHO_DIST, NOISE_RHO_ANG, NOISE_RHO_ANG)
+SBL_RHO = float(_get("sbl", "rho", 0.0))                         # SBL 各測距の時間相関
+
+# IMU 変位バイアスのランダムウォーク (MATH_SPEC §5.5)。1ステップ標準偏差 [m/軸]。
+# 既定 0 で従来 (白色のみ) と完全一致。実機 MEMS の緩やかなドリフトを模す。
+SIGMA_IMU_BIAS = float(_get("noise", "sigma_imu_bias", 0.0))
 
 # =====================================================================
 # ロバスト推定 (MATH_SPEC §4.4)。既定 'linear' は従来の純 L2 と一致。
@@ -159,6 +171,18 @@ ATT_MAG_SIGMA = float(_get("attitude", "mag_sigma", 0.02))    # 磁気ノイズ 
 ATT_GRAVITY = float(_get("attitude", "gravity", 9.80665))     # 重力 [m/s^2]
 ATT_FILTER_ALPHA = float(_get("attitude", "filter_alpha", 0.98))   # 相補係数 (1=ジャイロのみ)
 
+# 波動揺を「観測誤差」として全シナリオに反映するか (MATH_SPEC §8/§14)。
+# 既定 False では各シナリオの光学観測は従来どおり (姿勢誤差なし)。True で sensors の
+# apply_attitude_error_config が光学角度観測に波動揺を重ねる (imu_correct で補正/naive を選択)。
+ATT_AS_ERROR = bool(_get("attitude", "as_error", False))
+ATT_IMU_CORRECT = bool(_get("attitude", "imu_correct", True))
+# wave_attitude_sequence / simulate_imu_signals に ** 展開して渡せる辞書 (角度は rad)。
+ATT_WAVE = {"roll_amp": ATT_ROLL_AMP, "pitch_amp": ATT_PITCH_AMP, "yaw_amp": ATT_YAW_AMP,
+            "roll_period": ATT_ROLL_PERIOD, "pitch_period": ATT_PITCH_PERIOD,
+            "yaw_period": ATT_YAW_PERIOD, "yaw_mean": ATT_YAW_MEAN}
+ATT_IMU_KW = {"gyro_sigma": ATT_GYRO_SIGMA, "gyro_bias": ATT_GYRO_BIAS,
+              "acc_sigma": ATT_ACC_SIGMA, "mag_sigma": ATT_MAG_SIGMA, "gravity": ATT_GRAVITY}
+
 # 深い水深のテストシナリオ (run_deepwater.py)
 DEEP_DEPTHS = list(_get("deepwater", "depths", [5, 10, 15, 20]))
 DEEP_HORIZ_OFFSET = np.asarray(_get("deepwater", "horiz_offset", [3.0, 2.0]), dtype=float)
@@ -171,7 +195,10 @@ DEEP_MC_N = int(_get("deepwater", "mc_n", 600))
 # 再現性
 # =====================================================================
 SEED = int(_get("montecarlo", "seed", 0))
-MC_N = int(_get("montecarlo", "n", 2000))     # モンテカルロ試行数
+MC_N = int(_get("montecarlo", "n", 2000))     # 単時刻モンテカルロ試行数
+# 軌道シナリオの独立試行数 (MATH_SPEC §15)。従来 5 は統計的検出力が不足するため、
+# 論文用の比較曲線は >=30 を推奨 (独立サブストリーム rng.substream_seed と併用)。
+N_SEEDS_TRAJ = int(_get("montecarlo", "n_seeds_traj", 30))
 
 # =====================================================================
 # Stage 1 の真値 (truth.py が参照。推定側は参照しないこと)
@@ -193,6 +220,14 @@ STEREO_BASELINE = float(_get("stereo", "baseline", 0.10))        # [m]
 STEREO_SIGMA_CAM = np.deg2rad(float(_get("stereo", "sigma_cam_deg", 0.1)))  # [rad]
 STEREO_STANDOFF = float(_get("stereo", "standoff", 2.0))         # [m]
 STEREO_UP = np.asarray(_get("stereo", "up_axis", [0.0, 0.0, 1.0]), dtype=float)
+
+# =====================================================================
+# 運用時の子機サーベイ幾何 (親機のほぼ真下 = near-nadir)。
+# AquaBeacon は子機が親機のほぼ直下に来る運用なので、測位比較系シナリオはこの
+# 小さな near-nadir サーベイ箱を共有する (水平オフセットを水深に対し小さく保つ)。
+# =====================================================================
+SURVEY_AREA = tuple(_get("survey", "area", [2.0, 1.5]))
+SURVEY_ORIGIN = tuple(_get("survey", "origin", [0.5, 0.5]))
 
 # =====================================================================
 # Stage 2 ダブル芝刈り軌道 (run_mapping)

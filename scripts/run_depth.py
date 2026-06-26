@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import (SIGMA, P_PARENT, SEED, OPTICAL_MODEL, SIGMA_DEPTH,
                         DEPTH_BIAS, DEEP_DEPTHS, DEEP_HORIZ_OFFSET, DEEP_MC_N)
-from src.sensors import simulate_observation, simulate_depth, optical_angular_sigma
+from src.sensors import (simulate_observation, simulate_depth, optical_angular_sigma,
+                         apply_attitude_error_config)
 from src.estimator import estimate_position
 from src.evaluation import rmse_xyz
 from src.results_io import write_json, write_csv, scenario_dir, write_report
@@ -30,7 +31,7 @@ from src.results_io import write_json, write_csv, scenario_dir, write_report
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIGDIR = scenario_dir("depth")
 
-CLARITY = 0.3                # 掃引に使う濁り (coastal)
+CLARITY = OPTICAL_MODEL["attenuation_c"]   # 掃引に使う濁り (config [optical] attenuation_c)
 PANEL_A_DEPTH = 15.0         # (a) per-axis を見る水深
 OUTLIER_TRUTH = np.array([8.0, 6.0, -5.0])   # (c) 単時刻: 過度に急峻でない幾何
 
@@ -55,6 +56,7 @@ def _rmse_axes(depth, clarity, use_depth, seed=SEED, n=DEEP_MC_N):
     est = np.empty((n, 3))
     for i in range(n):
         z = simulate_observation(truth, sig, seed=seed + i, p_parent=P_PARENT)
+        z = apply_attitude_error_config(z, seed=seed + i)   # §14 波動揺 (config 既定 OFF)
         if use_depth:
             zd = simulate_depth(truth, SIGMA_DEPTH, seed=seed + 500000 + i,
                                 bias=DEPTH_BIAS)
@@ -72,8 +74,9 @@ def panel_single_time_outlier(seed=SEED, n=DEEP_MC_N):
     errs = {"L2(深度なし)": [], "L2(深度あり)": [], "huber(深度あり)": []}
     for i in range(n):
         z = simulate_observation(truth, SIGMA, seed=seed + i, p_parent=P_PARENT).copy()
+        z = apply_attitude_error_config(z, seed=seed + i)   # §14 波動揺 (config 既定 OFF)
         z[2] += np.deg2rad(12.0)                  # 仰角に外れ値 (誤対応相当)
-        zd = simulate_depth(truth, SIGMA_DEPTH, seed=seed + 900000 + i)
+        zd = simulate_depth(truth, SIGMA_DEPTH, seed=seed + 900000 + i, bias=DEPTH_BIAS)
         e1 = estimate_position(z, SIGMA, p_parent=P_PARENT)
         e2 = estimate_position(z, SIGMA, p_parent=P_PARENT, z_depth=zd,
                                sigma_depth=SIGMA_DEPTH)
@@ -183,7 +186,22 @@ def main(seed=SEED):
         "(a) 鉛直 z 軸の精度が劇的向上 (深度は z を直接・濁り非依存で拘束)、(b) 深い水深で角度が\n"
         "悪化しても深度ありは z と総合RMSEを抑える、(c) 冗長性 (観測4>未知数3) で単時刻でも\n"
         "ロバスト推定が外れ値を棄却できる。光学σは減衰モデル(§9)で校正した適応重みを仮定。",
-        condition_sections=["noise", "depth", "optical", "deepwater"],
+        condition_sections=["noise", "depth", "optical", "deepwater", "attitude"],
+        not_reflected=[
+            ("`[error_model]` (バイアス/距離成長/外れ値/音速ズレ/遅延)",
+             "本シナリオは深度あり/なしの **z 軸寄与を切り分ける**制御比較で、角度ノイズは"
+             "光減衰§9の σ_ang(d) を真値かつ重みにする well-calibrated 推定を仮定する。"
+             "系統バイアス・音速ズレを重ねると深度の純粋な効果が見えにくくなるため反映しない。"
+             "(c) の外れ値も所定の固定注入を使う。"),
+            ("`[optical]` (SNR/見失い系: snr_ref/snr_min/dropout_*)",
+             "本シナリオは角度の適応重みに σ_ang(d) サブモデル (attenuation_c/range_ref/"
+             "sigma_ref/sigma_floor/snr_exponent) のみ使う。検出・見失いを扱わないため "
+             "SNR・ドロップアウト系のキーは未使用。"),
+            ("`[deepwater]` (clarities/traj_depth/traj_clarity)",
+             "水深スキャンに `depths`・`horiz_offset`・`mc_n` のみ使用。濁りは "
+             "`[optical] attenuation_c` で固定する。clarities/traj_* は `run_deepwater` 用。"),
+            ("`[attitude]`/`[sbl]`/`[stereo]`", "親機姿勢・SBL・ステレオは使わない (別シナリオ)。"),
+        ],
         outputs=[("depth_fusion.png", "軸別RMSE/vs水深/単時刻外れ値の3パネル"),
                  ("run_depth.json", "全結果"),
                  ("run_depth.csv", "水深別 z RMSE (深度あり/なし)")],

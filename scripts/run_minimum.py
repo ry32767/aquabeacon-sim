@@ -25,6 +25,10 @@ from src.estimator import estimate_position
 from src.evaluation import position_error, monte_carlo_rmse
 
 
+# 注: 本スクリプトは Stage1 の**理想ベースライン**なので、config.toml の現実誤差
+# ([error_model]/[acoustic]/[sync]) は意図的に反映しない (一定σの零平均ガウスのみ)。
+# ノイズフリーで RMSE≈0 を確認する基準点であり、系統バイアス・音速ズレを重ねると
+# その確認が崩れるため。現実誤差込みの測位評価は run_spec / run_deepwater を参照。
 def main(seed: int = SEED, n_montecarlo: int = MC_N):
     # ① 真値 (Stage 1 は単一点)
     truth = true_child_position()

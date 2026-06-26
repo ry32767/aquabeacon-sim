@@ -20,6 +20,11 @@ from src.config import (SIGMA, MC_N, TRUE_CHILD_POSITION, SENS_DEPTH_Z,
                         SENS_ANGLE_DEGS, SENS_ELEV_DEGS, SENS_NADIR_D)
 from src.evaluation import monte_carlo_rmse
 
+# 注: 本スクリプトは1パラメータ (σ・距離・仰角) を**単独で振る制御掃引**なので、
+# config.toml の現実誤差 ([error_model]/[acoustic]/[sync]) は意図的に反映しない。
+# 系統バイアス・外れ値・音速ズレを重ねると「横誤差 ~ d*σ_ang」の素直な関係が濁るため。
+# 現実誤差込みの設計掃引は run_spec を参照。
+
 
 def _rmse_mm(truth, sigma, n=MC_N, seed=0):
     return monte_carlo_rmse(truth, sigma, n=n, seed=seed)['total'] * 1000

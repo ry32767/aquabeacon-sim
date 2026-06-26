@@ -195,6 +195,15 @@ def main(seed=SEED, export=True):
             "(ジャイロ+加速度+磁気) の SO(3) 相補フィルタで姿勢 R_est を推定し、機体角度をワールド\n"
             "へ補正する。動揺なし(baseline) / 補正なし(naive) / IMU補正 の3条件で軌道 RMSE を比較。",
             condition_sections=["attitude", "noise", "trajectory"],
+            not_reflected=[
+                ("`[error_model]`/`[acoustic]`/`[sync]`",
+                 "機体観測は専用パス `simulate_observation_sequence_attitude` (§14) を通り、"
+                 "現実誤差モデル (`simulate_observation_realistic`) とは別系統。バイアス・音速ズレ・"
+                 "外れ値・遅延は本シナリオの機体角度観測には実装していない (姿勢推定の効果を切り分けるため)。"),
+                ("`[optical]` (減衰σ)",
+                 "親機光学リンクの減衰モデルは本シナリオの機体角度観測に適用しない (一定σ)。"),
+                ("`[depth]`/`[sbl]`/`[stereo]`", "深度・SBL・ステレオは使わない (別シナリオ)。"),
+            ],
             outputs=[("attitude.png", "(A) roll/pitch/yaw の真値 vs IMU 相補フィルタ推定"),
                      ("position.png", "(B) 補正なし vs IMU補正 の推定軌道 (vs 真の軌道)"),
                      ("run_attitude.json", "姿勢 RMS と位置 RMSE の数値")],

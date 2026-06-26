@@ -31,7 +31,7 @@ from _plotstyle import plt, USE_JP, JP_FONT, Lbl
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import (SIGMA, SIGMA_DIST, P_PARENT, CUBE_SIDE, CUBE_CENTER,
-                        STEREO_BASELINE, STEREO_SIGMA_CAM, STEREO_STANDOFF,
+                        STEREO_BASELINE, STEREO_SIGMA_CAM, STEREO_STANDOFF, STEREO_UP,
                         ERROR_MODEL, ERROR_MODEL_ENABLE,
                         SPEC_POS_RMSE_TARGET_MM, SPEC_POS_BEARING,
                         SPEC_POS_RANGE_GRID, SPEC_POS_NOMINAL_RANGE,
@@ -44,7 +44,8 @@ from src.truth import true_cube_pointcloud
 from src.sensors import (simulate_observation, simulate_observation_realistic,
                          simulate_depth, stereo_camera_positions,
                          simulate_stereo_observation,
-                         optical_angular_sigma, optical_snr)
+                         optical_angular_sigma, optical_snr,
+                         apply_attitude_error_config)
 from src.estimator import estimate_position
 from src.geometry import stereo_triangulate, robust_cube_side_estimate
 from src.evaluation import (monte_carlo_rmse, rmse_xyz, dimension_error_mm)
@@ -124,6 +125,7 @@ def _pos_rmse_mm(truth, sigma, seed=SEED, n=SPEC_MC_N):
         for i in range(n):
             z = simulate_observation_realistic(truth, sigma, seed=seed + i,
                                                p_parent=P_PARENT, **ERROR_MODEL)
+            z = apply_attitude_error_config(z, seed=seed + i)   # §14 波動揺 (config 既定 OFF)
             est[i] = estimate_position(z, sigma, p_parent=P_PARENT)
         return rmse_xyz(truth, est)["total"] * 1000
     return monte_carlo_rmse(truth, sigma, n=n, seed=seed,
@@ -143,7 +145,8 @@ def _stereo_dim_error_mm(cloud, standoff, baseline, sigma_cam, looks, seed=SEED)
     """
     est = np.empty_like(cloud)
     for i, p in enumerate(cloud):
-        c_L, c_R = stereo_camera_positions(p, CUBE_CENTER, standoff, baseline)
+        c_L, c_R = stereo_camera_positions(p, CUBE_CENTER, standoff, baseline,
+                                           up=STEREO_UP)
         acc = np.zeros(3)
         for m in range(looks):
             brg = simulate_stereo_observation(p, c_L, c_R, sigma_cam,
@@ -252,6 +255,7 @@ def _pos_rmse_depth(depth, model, use_depth, seed=SEED, n=OPDEPTH_N):
     est = np.empty((n, 3))
     for i in range(n):
         z = simulate_observation(truth, sig, seed=seed + i, p_parent=P_PARENT)
+        z = apply_attitude_error_config(z, seed=seed + i)   # §14 波動揺 (config 既定 OFF)
         if use_depth:
             zd = simulate_depth(truth, SIGMA_DEPTH, seed=seed + 700000 + i)
             est[i] = estimate_position(z, sig, p_parent=P_PARENT,
@@ -480,7 +484,20 @@ def main():
         "運用可能な最大水深 (光学減衰§9 + 深度センサ§10: 濁りごとに深度センサあり/なしで目標を\n"
         "満たす最大水深) を出す。掃引して目標線を横切る境界を線形補間で求める。",
         condition_sections=["noise", "spec", "stereo", "optical", "depth",
-                            "error_model", "montecarlo"],
+                            "error_model", "acoustic", "sync", "montecarlo", "attitude"],
+        not_reflected=[
+            ("`[error_model]`/`[acoustic]` (幾何=ステレオ側)",
+             "ジオメトリ (standoff/baseline/σ_cam/looks) は子機2カメラの三角測量で、"
+             "親機カメラ+音響とは別系統。カメラ角度ノイズは `[stereo]` 系のみが効く。"
+             "**測位の距離/角度スペック掃引には `[error_model]`/`[acoustic]` を反映済み** "
+             "(`enable=true` のとき。README 冒頭の『測位評価』モード表記を参照)。"
+             "運用水深掃引は σ_ang(d) を重みにする well-calibrated 理想ノイズで評価する "
+             "(深度センサの純粋な延伸効果を見るため系統誤差は重ねない)。"),
+            ("`[sync] acoustic_latency_s`",
+             "時刻同期遅延 (§8.5) は子機速度×遅延で効くが、測位・運用水深スペックは静止単点評価 "
+             "(速度=0) のため作用しない。移動軌道での効果は `run_deepwater` を参照。"),
+            ("`[sbl]`/`[attitude]`", "SBL・親機姿勢は使わない (別シナリオ)。"),
+        ],
         outputs=[("design_spec.png", "測位・幾何の設計要求グラフ"),
                  ("operational_depth.png", "深度センサあり/なしの最大運用水深"),
                  ("run_spec.json", "全要求と運用水深"),

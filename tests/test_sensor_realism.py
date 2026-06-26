@@ -119,3 +119,97 @@ def test_latency_uses_lagged_position_for_distance():
     _, th, ph = forward_observation(relative_vector(P, P_PARENT))
     assert z[1] == pytest.approx(th, rel=1e-9)
     assert z[2] == pytest.approx(ph, rel=1e-9)
+
+
+# ============================================================================
+# §8.4b SVP (音速プロファイル実効音速) / §8.6 時間相関 / §5.5 IMU バイアス
+# いずれも既定 (g=0, rho=0, sigma_bias=0) で従来と完全一致 (後方互換) を担保する。
+# ============================================================================
+from src.sensors import (effective_sound_speed, gauss_markov_sequence,
+                         simulate_sbl_range_sequence, simulate_depth_sequence,
+                         simulate_imu_displacements)
+
+
+# --- 8.4b SVP --------------------------------------------------------------
+def test_svp_gradient_zero_is_constant_speed():
+    """g=0 なら実効音速は c0 (従来の定数音速と一致)。"""
+    assert effective_sound_speed(1500.0, 0.0, -15.0) == 1500.0
+
+
+def test_svp_effective_speed_is_log_mean():
+    """g!=0 の実効音速は端点速度の対数平均 (c_child-c0)/ln(c_child/c0)。"""
+    c0, g, z = 1500.0, -0.5, -20.0
+    c_child = c0 + g * z
+    expect = (c_child - c0) / np.log(c_child / c0)
+    assert effective_sound_speed(c0, g, z) == pytest.approx(expect, rel=1e-12)
+
+
+def test_svp_backward_compatible_observation():
+    """svp_gradient_per_s=0 (既定) は観測を変えない (後方互換)。"""
+    for seed in range(10):
+        a = simulate_observation_realistic(P, SIGMA, seed=seed, p_parent=P_PARENT,
+                                           sound_speed_true=1505.0)
+        b = simulate_observation_realistic(P, SIGMA, seed=seed, p_parent=P_PARENT,
+                                           sound_speed_true=1505.0,
+                                           svp_gradient_per_s=0.0)
+        assert np.allclose(a, b, atol=1e-12)
+
+
+def test_svp_shifts_range_when_enabled():
+    """g!=0 でノイズ0なら測距が実効音速スケールで変わる (定量)。"""
+    p = np.array([0.5, 0.5, -18.0])
+    zero = (0.0, 0.0, 0.0)
+    d_true = np.linalg.norm(p)
+    c0 = 1500.0
+    z = simulate_observation_realistic(p, zero, seed=0, sound_speed_true=c0,
+                                       sound_speed_assumed=c0, svp_gradient_per_s=-0.4)
+    c_eff = effective_sound_speed(c0, -0.4, -18.0)
+    assert z[0] == pytest.approx(d_true * c0 / c_eff, rel=1e-9)
+
+
+# --- 8.6 時間相関ノイズ (AR(1)) --------------------------------------------
+def test_colored_noise_rho0_matches_white_sequence():
+    """rho=0 の観測列は従来の白色 (per-step seed) と完全一致 (後方互換)。"""
+    traj = np.array([[3.0, 4.0, -5.0], [3.2, 4.1, -5.1], [3.4, 4.2, -5.2],
+                     [3.6, 4.0, -5.0]])
+    a = simulate_observation_sequence(traj, SIGMA, seed=11)
+    b = simulate_observation_sequence(traj, SIGMA, seed=11, rho=0.0)
+    assert np.array_equal(a, b)
+
+
+def test_gauss_markov_marginal_variance_and_autocorr():
+    """定常 AR(1): 周辺 std ≈ sigma, lag-1 自己相関 ≈ rho (統計, 固定 seed)。"""
+    e = gauss_markov_sequence(40000, 0.5, 0.7, seed=1)
+    assert abs(e.std() - 0.5) < 0.02
+    ac = np.corrcoef(e[:-1], e[1:])[0, 1]
+    assert abs(ac - 0.7) < 0.03
+
+
+def test_colored_depth_and_sbl_rho0_backward_compatible():
+    """深度/SBL 列も rho=0 で従来と完全一致。"""
+    traj = np.array([[0.5, 0.5, -8.0], [0.7, 0.6, -8.2], [0.9, 0.7, -8.1]])
+    anchors = np.array([[1., 1., 0.], [1., -1., 0.], [-1., 1., 0.], [-1., -1., 0.]])
+    assert np.array_equal(simulate_depth_sequence(traj, 0.05, seed=5),
+                          simulate_depth_sequence(traj, 0.05, seed=5, rho=0.0))
+    assert np.array_equal(simulate_sbl_range_sequence(traj, anchors, 0.03, seed=5),
+                          simulate_sbl_range_sequence(traj, anchors, 0.03, seed=5, rho=0.0))
+
+
+# --- 5.5 IMU 変位バイアス ---------------------------------------------------
+def test_imu_bias_zero_backward_compatible():
+    """sigma_bias=0, bias0=0 (既定) で従来の白色出力と完全一致。"""
+    traj = np.array([[0.0, 0.0, -5.0], [0.3, 0.1, -5.0], [0.6, 0.2, -5.0],
+                     [0.9, 0.1, -5.0]])
+    a = simulate_imu_displacements(traj, 0.02, seed=4)
+    b = simulate_imu_displacements(traj, 0.02, seed=4, sigma_bias=0.0, bias0=0.0)
+    assert np.array_equal(a, b)
+
+
+def test_imu_bias_adds_drift():
+    """sigma_bias>0 で変位が白色のみと変わる (バイアスドリフト付与); b_0=bias0。"""
+    traj = np.array([[0.0, 0.0, -5.0], [0.3, 0.1, -5.0], [0.6, 0.2, -5.0],
+                     [0.9, 0.1, -5.0]])
+    a = simulate_imu_displacements(traj, 0.02, seed=4)
+    b = simulate_imu_displacements(traj, 0.02, seed=4, sigma_bias=0.01, bias0=0.0)
+    assert not np.array_equal(a, b)
+    assert np.allclose(a[0], b[0], atol=1e-12)     # b_0=bias0=0 -> 初回は白色のまま

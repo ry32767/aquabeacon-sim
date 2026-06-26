@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import SIGMA, SIGMA_IMU, P_PARENT, SEED
 from src.truth import double_lawnmower_trajectory
-from src.sensors import simulate_observation_sequence, simulate_imu_displacements
+from src.sensors import (simulate_observation_sequence, simulate_imu_displacements,
+                         apply_attitude_error_config)
 from src.estimator import estimate_trajectory
 from src.evaluation import rmse_xyz
 from src.results_io import write_json, write_csv, scenario_dir, write_report
@@ -42,6 +43,7 @@ def build_case(seed=SEED):
     traj = double_lawnmower_trajectory(area=(6.0, 4.0), depth=-7.5,
                                        n_legs=2, pts_per_leg=5, origin=(3.0, 4.0))
     z = simulate_observation_sequence(traj, SIGMA, seed=seed, p_parent=P_PARENT)
+    z = apply_attitude_error_config(z, seed=seed)        # §14 波動揺 (config [attitude].as_error。既定 OFF)
     for k, comp, val in OUTLIERS:
         z[k, comp] += val
     imu = simulate_imu_displacements(traj, SIGMA_IMU, seed=seed + 1)
@@ -116,7 +118,20 @@ def main(seed=SEED):
         "外れ値 (ライト見失い・音響マルチパス) を数時刻に注入したダブル芝刈り軌道を、純L2 と\n"
         "各ロバスト損失 (huber/soft_l1/cauchy) で推定し RMSE を比較する。IMU拘束つき軌道推定で\n"
         "ロバスト損失が外れ値時刻の残差を減衰し、RMSE を大きく下げることを示す。",
-        condition_sections=["noise", "trajectory", "estimator", "montecarlo"],
+        condition_sections=["noise", "montecarlo", "attitude"],
+        not_reflected=[
+            ("`[error_model]` (バイアス/距離成長/外れ値/音速ズレ/遅延)",
+             "本シナリオは**固定の制御外れ値**を所定の時刻に注入し、純L2 vs ロバスト損失の効果を"
+             "切り分けて見る制御実験。config のランダム外れ値や系統誤差を重ねると比較が濁るため反映しない。"),
+            ("`[estimator]` (loss/f_scale)",
+             "純L2 と各ロバスト損失 (huber/soft_l1/cauchy) を**意図的に掃引比較**するのが目的なので、"
+             "config の `loss` は使わない (f_scale は estimator 既定 1.345)。"),
+            ("`[trajectory]`",
+             "外れ値の効果を切り分けるため固定の小さな制御軌道 (6×4m, 2レグ×5点) を使う。"
+             "標準のダブル芝刈り軌道 (`[trajectory]`) は `run_mapping` を参照。"),
+            ("`[optical]`", "光減衰モデルは使わない (一定σ)。減衰込みのロバスト効果は `run_deepwater`。"),
+            ("`[depth]`/`[sbl]`/`[attitude]`", "深度・SBL・親機姿勢は使わない (別シナリオ)。"),
+        ],
         outputs=[("robust_vs_linear.png", "純L2 vs ロバストの軌道比較"),
                  ("run_robust.json", "全損失の RMSE"),
                  ("run_robust.csv", "損失別 RMSE 表")],

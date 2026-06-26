@@ -20,10 +20,15 @@ results/visualize/
 │   ├── 5_traj_imu/           # scene5  traj_imu.png + traj_imu_rotate.gif/.mp4
 │   ├── 7_mapping_progress/   # scene7  mapping_progress.png/.gif/.mp4
 │   └── 9_traj_converge/      # scene9  traj_converge.png/.gif/.mp4
-└── geometry/                 # 子機ステレオ2カメラ による3D計測 (MATH_SPEC §6.2)
-    ├── 6_cube_mapping/       # scene6  cube_mapping.png + cube_mapping_rotate.gif/.mp4
-    ├── 8_multilook_converge/ # scene8  multilook_converge.png/.gif/.mp4
-    └── 10_stage2_sensitivity/# scene10 stage2_sensitivity.png
+├── geometry/                 # 子機ステレオ2カメラ による3D計測 (MATH_SPEC §6.2)
+│   ├── 6_cube_mapping/       # scene6  cube_mapping.png + cube_mapping_rotate.gif/.mp4
+│   ├── 8_multilook_converge/ # scene8  multilook_converge.png/.gif/.mp4
+│   └── 10_stage2_sensitivity/# scene10 stage2_sensitivity.png
+└── validation/               # 研究グレードの不確かさ・効率・幾何希釈 (MATH_SPEC §4.5, §15)
+    ├── 11_crlb_ellipsoid/    # scene11 crlb_ellipsoid.png + crlb_ellipsoid_rotate.gif/.mp4
+    ├── 12_gdop_map/          # scene12 gdop_map.png
+    ├── 13_efficiency/        # scene13 efficiency.png
+    └── 14_fusion_uncertainty/# scene14 fusion_uncertainty.png
 ```
 
 各フォルダに 1 シナリオの PNG (+ アニメは GIF / MP4) がまとまる。発表時はフォルダ単位で扱える。
@@ -59,6 +64,10 @@ python scripts/run_visualize.py
 | **scene8: ステレオ多フレーム平均の収束アニメ** | 撮影フレーム数 looks=1→30 を増やすにつれ、子機ステレオで復元したキューブ点群(青) が真の表面(赤) に締まり、寸法誤差・体積誤差率・点群RMS が改善する過程をアニメ化 (MATH_SPEC §6.2)。「多フレーム平均が精度のレバー」を可視化。 | `geometry/8_multilook_converge/` : `multilook_converge.png`, `.gif`, `.mp4` |
 | **scene9: 軌道推定の収束アニメ** | 散らかった初期軌道から、複数時刻バンドル調整 (ガウス・ニュートン反復, MATH_SPEC §5) で軌道全体が真値へ収束していく過程。ノイズフリーなので数反復で RMSE≈0。 | `positioning/9_traj_converge/` : `traj_converge.png`, `.gif`, `.mp4` |
 | **scene10: Stage 2 ステレオ感度グラフ** | (a) 観測距離 standoff、(b) ベースライン B、(c) 撮影フレーム数 looks を振ったときの寸法誤差・体積誤差率・点群RMS (静止画, 3パネル, 2軸)。**子機を近づけるほど・ベースラインを長くするほど・多フレームほど精度が上がる**ステレオ設計の根拠 (MATH_SPEC §6.2)。 | `geometry/10_stage2_sensitivity/` : `stage2_sensitivity.png` |
+| **scene11: CRLB 楕円体の重ね描き** | 経験推定クラウド + 経験 2σ 楕円体に、**解析 CRLB 2σ 楕円体 (緑ワイヤ)** を重ねる。経験のばらつきが理論下界とほぼ一致する = **推定が効率的 (情報理論的に最適)** を立体的に見せる (MATH_SPEC §4.5, §15)。回転 GIF/MP4 つき。 | `validation/11_crlb_ellipsoid/` : `crlb_ellipsoid.png`, `.gif`, `.mp4` |
+| **scene12: GDOP マップ** | 距離 d × 仰角 φ の格子で **GDOP (位置 1σ 半径)** をヒートマップ表示し、等高線 (50/75/100/150/200 mm) を重ねる。**観測幾何 → 達成可能精度**の地図で、near-nadir 運用域の根拠 (MATH_SPEC §4.5)。 | `validation/12_gdop_map/` : `gdop_map.png` |
+| **scene13: 効率 (経験RMSE→CRLB)** | (a) 仰角掃引・(b) 距離掃引で、経験モンテカルロ RMSE が **CRLB に漸近**する様子を **95% 信頼区間つき**で示す (MATH_SPEC §15)。論文の中核検証図をそのまま発表に使える。 | `validation/13_efficiency/` : `efficiency.png` |
+| **scene14: センサ構成と CRLB (正直比較)** | 同一 near-nadir 幾何で 光学+音響1点 / +深度 / SBL4点(4m)+深度 / SBL4点(16m)+深度 の **位置1σ (GDOP) と z 1σ** を棒グラフ比較。**深度→z圧縮**、**SBL は光なしだが深い子機では大型アレイ要** (§13.2) という正直な設計知見を一目で示す。 | `validation/14_fusion_uncertainty/` : `fusion_uncertainty.png` |
 
 > scene7〜10 は Stage 2 の「動的アニメ + 感度」。scene5/6 (回転ビュー) と合わせて Stage 2 の理解を立体的に見せる。
 > 各シーンとも乱数は seed 固定で再現可能。推定/三角測量 (estimate_trajectory / stereo_triangulate) には truth を渡さず観測のみを入力する。

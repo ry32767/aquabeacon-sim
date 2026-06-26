@@ -43,10 +43,13 @@ n_legs      = 4
 pytest tests/                       # 全テスト
 pytest tests/test_math_cases.py -v  # 数式の数値検証(最優先)
 python scripts/run_minimum.py       # ミニマム: 単時刻の位置推定+RMSE
+python scripts/run_crlb.py          # 統計的検証: 経験RMSE vs CRLB(効率) / NEES(一貫) / GDOPマップ
 python scripts/run_mapping.py       # サクセス: 複数時刻+IMUの軌道推定 / キューブ寸法・体積
 python scripts/run_sensitivity.py   # 感度解析(ノイズ・距離・角度を振る)
+python benchmarks/run_headlines.py  # 論文の中核数値を (コード,config,seed) にピン留め (再生成・照合)
 python scripts/run_spec.py          # 設計スペックシート: 目標精度→設計要求を逆算
 python scripts/run_robust.py        # ロバスト推定デモ: 外れ値下で L2 vs Huber/Cauchy
+python scripts/run_reliability.py   # 信頼性掃引: 外れ値故障率(L2 vs Huber)/時間相関/IMUバイアス劣化
 python scripts/run_deepwater.py     # 深い水深(10-20m)テスト: 光減衰→精度劣化・見失い
 python scripts/run_depth.py         # 深度センサ融合デモ: z軸精度↑・単時刻ロバスト
 python scripts/run_no_optical.py    # 光学なしフォールバック: 距離+IMU+深度のみで測位
@@ -203,6 +206,45 @@ IMU補正** の3条件の軌道 RMSE を比較する (既定の例: 姿勢RMS ~0
 
 ジオメトリの点群は親機カメラではなく子機ステレオが作る。`config.toml` の `[stereo]` で
 ベースライン・観測距離・カメラ角度ノイズを調整できる。
+
+## 研究グレードの検証と再現性 (MATH_SPEC §4.5, §15)
+
+論文での成果発表に耐えるよう、推定の**不確かさの定量化**と**統計的妥当性**を備える。
+
+### 不確かさ: 共分散・CRLB・GDOP (§4.5)
+- `estimator.observation_jacobian` — 観測モデルの解析ヤコビアン (§4.3)。数値微分と一致し、
+  軌道・SBL・光学なし推定を大幅に高速化する (光学なしフォールバックは約46秒→0.1秒)。
+- `estimator.position_covariance` / `gdop` — 解の共分散 `(JᵀWJ)⁻¹` と幾何希釈 GDOP。
+  `estimate_position/estimate_trajectory/estimate_trajectory_sbl(..., return_cov=True)` で取得。
+  共分散は位置と σ のみから決まり真値を見ない (MBD)。
+- `evaluation.crlb_position/crlb_rmse` — 真値幾何での Cramér-Rao 下界。
+
+### 統計検証: 効率・一貫性・不偏性・信頼区間 (§15)
+- `python scripts/run_crlb.py` — **経験モンテカルロ RMSE が CRLB に漸近する (推定が効率的)**
+  ことを仰角・距離掃引で示し、**NEES の平均 ≈ 3 (報告共分散が較正済み=一貫)**、バイアスが
+  RMSE に対し小さい (ほぼ不偏) ことを確認、**GDOP マップ**で観測幾何→達成可能精度を可視化する。
+  既定設定で 効率 RMSE/CRLB ≈ 0.98–1.01、NEES ≈ 2.9–3.1。
+- `evaluation.rmse_with_ci` — RMSE のブートストラップ 95% 信頼区間。
+- `evaluation.montecarlo_trajectory_stats` — 軌道推定を**独立サブストリーム**で N 回まわし
+  平均 RMSE と CI を返す。
+
+### 再現性インフラ
+- `src/rng.py` (`substream_seed` / `spawn_generators`) — `numpy.SeedSequence` で互いに素な
+  乱数ストリームを生成。従来の `seed+s`/`seed+k` 連番が招く**試行間ノイズ再利用 (過小分散)** を
+  構造的に防ぐ (§15.2)。`run_no_optical`/`run_sbl` は独立試行 + 信頼区間で報告する
+  (試行数は `config.toml [montecarlo] n_seeds_traj`、論文曲線は ≥30 推奨)。
+- 来歴 (provenance): `results/*.json` と各 `README.md` に **git コミット・numpy/scipy/Python 版・
+  OS・乱数方式・解決済み config の指紋 (sha256)** を自動記録 (`results_io._provenance`)。
+- `benchmarks/run_headlines.py` + `tests/test_headline_numbers.py` — 中核数値 (CRLB・効率・
+  一貫性・理想測位 RMSE) を `benchmarks/headline_metrics.json` にピン留めし CI で照合。
+
+### 追加した誤差モデル (既定 OFF = 従来と完全一致)
+- **時間相関ノイズ (1次ガウス・マルコフ, §8.6)**: `config.toml [error_model] rho_dist/rho_ang`,
+  `[sbl] rho`。実機の相関誤差を模す (白色のみだと平滑化/IMU 融合の利得を過大評価する)。
+- **音速プロファイル SVP (§8.4b)**: `[acoustic] svp_gradient_per_s`。経路依存の実効音速 (対数平均)。
+- **IMU 変位バイアスのランダムウォーク (§5.5)**: `[noise] sigma_imu_bias`。実機 MEMS のドリフト。
+
+これらは既定値で従来出力と byte 一致 (`pytest tests/` の全件と `run_minimum` の数値が不変)。
 
 ## 公開について
 
